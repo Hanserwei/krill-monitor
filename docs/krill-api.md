@@ -143,10 +143,26 @@ Superba 将已有的 Krill Key 当作 PAT 或 API Key 使用，并未实现 Kril
 | 撤销 | `DELETE /api/tokens/{id}` | 不依赖返回正文，撤销不可恢复 |
 | 永久删除 | `DELETE /api/tokens/{id}/destroy` | 不依赖返回正文 |
 
-在用户授权下，已通过官网表单创建一个测试 Key。创建响应为 HTTP 200、`{success, code, data:{item, token}}`，`item.id` 为正整数。实际默认 `allow_balance_fallback=true`、`ip_whitelist_disabled=false`；创建后的渠道及扣费设置可以不保存直接关闭。应用本轮仅沿用默认配置，不提供渠道、消费限额或 IP 白名单编辑；完整 Key、登录凭据及真实响应不写入仓库。
+在用户授权下，已通过官网表单创建一个测试 Key。创建响应为 HTTP 200、`{success, code, data:{item, token}}`，`item.id` 为正整数。实际默认 `allow_balance_fallback=true`、`ip_whitelist_disabled=false`；创建后的渠道及扣费设置可以不保存直接关闭。应用支持独立渠道编辑，余额扣费、消费限额及 IP 白名单仍保留现有配置；完整 Key、登录凭据及真实账号响应不写入仓库。
 
 创建与轮换不自动重试；Android 同时关闭 OkHttp 连接重试，并将这两个 POST 的正文标为一次性，避免 `503 + Retry-After: 0` 再次发送。超时或响应无法确认时提示操作可能已生效，先刷新列表。新值先保存成功才提示“已加密保存在本机”，保存失败在当前会话保留待保存值并允许重试，避免重复创建；轮换未保存时禁止访问已失效的旧副本。查看和复制分别触发新的系统认证；取消不披露、不复制、不删数据，进入后台立即取消认证任务并清除明文。
 
 Android 11+ 本地库按已验证 `/api/auth/me` 的用户 ID 与 Key ID 隔离。每条随机 AES-256-GCM 数据密钥由 Android Keystore RSA-OAEP 公钥封装，用户 ID 与 Key ID 作为附加认证数据；解包必须使用 `BiometricPrompt.CryptoObject` 认证过的私钥操作，支持强生物识别或设备锁屏凭据。不使用账号会话存储密钥，不提供无认证降级，不将 Key 保存到 Web。密钥库 preferences 排除云备份和设备迁移；退出仅关闭明文，保留各账号密文。
 
 Web 不增加密钥页，代理也不开放 `/api/tokens` 路由。两端构建及 Android 47 项、Wasm 46 项、Node 8 项回归通过，包括真实 OkHttp 引擎的 503 不重放检查。Android 16 真机以虚拟 Key 验证密文保存、每次认证的 Keystore 约束、未认证解密被拒及一次系统认证后的实际解密往返；虚拟记录和临时自检入口均已移除，正式密钥列表与屏幕保护已验证。系统同时显示指纹和 PIN 入口，但未分别走完指纹及 PIN 两种确认路径，也未对真实 Key 执行轮换、撤销或删除。
+
+## Key 渠道配置
+
+- `GET /api/my/channels` 的 `data` 为数组，使用 `id`、`name`、`default_routed`、`billing_multiplier`；`GET /api/tokens/{id}/channels` 读取 `data.channel_ids`。保存只调用 `PUT /api/tokens/{id}/channels`，正文为 `{"provider_ids":[101,102]}`，不附带余额、IP、名称或限额字段。
+- 新 Key 必须先完成本机加密保存，再显示默认渠道选择；卡片整行可多选，以颜色和“已选”标记显示选择状态，保留复选语义供无障碍使用。选择“保存并查看 Key”或“跳过并查看 Key”后直接调用系统认证，成功后展示刚创建的 Key；取消认证不显示，已有 Key 的渠道保存不触发查看。保存渠道失败保留草稿和新建流程，不重复创建 Key。已有 Key 返回空数组时按官网回显默认渠道；允许保存空数组，但不能把它标为“禁用所有渠道”。当前目录中不存在的已选 ID 会保留，避免覆盖未知配置。
+- 新增勾选时按官网精确名称执行互斥：`国产模型官渠` 与 `阿里云直连`；`Max 官渠`、`Kiro 渠道`、`Max 官渠高可用`、`Anthropic 官key` 同组互斥。读取已有配置时不擅自修正冲突。离页或会话失效关闭编辑器，迟到响应不重新弹出。
+
+## 公开渠道状态
+
+官网 [渠道状态页](https://www.krill-code.com/status) 使用匿名 `GET /api/public/channel-status?hours=24`，返回 `data.channels` 和 `data.perf`，按 `channel_key` 关联。当前状态 `1` 为正常、`2` 为波动、`0` 为异常，其余为未知；有效 `fixed_status` 优先。历史 `ts` 无时区时按官网处理为 UTC，显示时转为 UTC+8。
+
+线路页分别展示设备到接入线路的 HTTP 往返耗时，以及官网供应商渠道/模型状态。历史条汇总最近 24 小时，每小时取最差已知状态；缺样本为灰色。可选性能数据包括 `throughput_p50_tps`（缺失时回退 `throughput_avg_tps`）、`cache_rate` 及 `avg_image_time_ms`。`ttft_p99_ms` 在官网有分位数标签歧义，当前不展示；不推算未提供的可用率或错误率。
+
+公开状态客户端不附带 JWT 或 Cookie，缓存 60 秒，限流遵守 `Retry-After`，失败保留旧结果与原获取时间。Web 同源代理只新增公开 GET 路由和精确 `?hours=24` 查询，拒绝额外、重复或其他参数；公开响应上限为 8 MiB，其余账号响应仍为 2 MiB，Key 管理路由仍关闭。
+
+本轮验证：Android 61 项、Wasm 60 项及 Node 10 项回归通过，正式两端构建及安全审阅通过。真机读取已有 Key 渠道、整卡点选草稿后取消，未提交真实账号配置；官网公开状态实际加载 31 个模型，未登录 Web 也能通过同源代理读取，且请求不带认证头、fetch credentials 为 omit。虚拟 Key 的完整界面流程已覆盖“保存并查看”和“跳过并查看”，两者均经认证入口后直接显示新 Key，不重复创建或额外写入配置；还覆盖保存失败、取消认证、认证任务排队前离页及迟到回调。临时预览已删除，未额外创建真实 Key。

@@ -16,6 +16,13 @@ data class ManagedApiKey(
 
 data class ManagedKeyList(val accountId: Long, val items: List<ManagedApiKey>)
 
+data class ApiKeyChannel(
+    val id: Long,
+    val name: String,
+    val defaultRouted: Boolean,
+    val billingMultiplier: Double?,
+)
+
 class ApiKeySecret(val item: ManagedApiKey, val secret: String)
 
 sealed interface AccountLoginResult {

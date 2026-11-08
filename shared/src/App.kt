@@ -30,8 +30,8 @@ import com.hanserwei.krill_monitor.resources.Res
 import com.hanserwei.krill_monitor.resources.krill_logo
 import com.hanserwei.krill_monitor.resources.noto_sans_sc
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import org.jetbrains.compose.reload.DevelopmentEntryPoint
 import org.jetbrains.compose.resources.Font
 import org.jetbrains.compose.resources.painterResource
@@ -243,10 +243,48 @@ fun App() {
         }
         val lineProber = remember { LineProber() }
         DisposableEffect(lineProber) { onDispose { lineProber.close() } }
+        val channelStatusClient = remember { ChannelStatusClient() }
+        DisposableEffect(channelStatusClient) { onDispose { channelStatusClient.close() } }
         var accountData by remember(session, days) { mutableStateOf<AccountDashboard?>(null) }
-        var lines by remember(session) { mutableStateOf<List<LineHealth>>(emptyList()) }
+        var lines by remember { mutableStateOf<List<LineHealth>>(emptyList()) }
+        var lineRevision by remember { mutableIntStateOf(-1) }
+        var probing by remember { mutableStateOf(false) }
+        var channelLoading by remember { mutableStateOf(false) }
+        var channelStatus by remember { mutableStateOf<ChannelStatusSnapshot?>(null) }
+        var channelError by remember { mutableStateOf<String?>(null) }
         var loading by remember(session, days) { mutableStateOf(false) }
         var error by remember(session, days) { mutableStateOf<String?>(null) }
+        LaunchedEffect(page) {
+            if (page == Page.Lines && lineRevision < 0) lineRevision = 0
+        }
+        LaunchedEffect(lineRevision) {
+            if (lineRevision < 0) return@LaunchedEffect
+            coroutineScope {
+                launch {
+                    probing = true
+                    try {
+                        lines = lineProber.probeLines()
+                    } finally {
+                        probing = false
+                    }
+                }
+                launch {
+                    channelLoading = true
+                    channelError = null
+                    try {
+                        channelStatus = channelStatusClient.load(refresh = lineRevision > 0)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: AccountAccessException) {
+                        channelError = e.message
+                    } catch (_: Exception) {
+                        channelError = "无法获取官网渠道状态，请稍后刷新。"
+                    } finally {
+                        channelLoading = false
+                    }
+                }
+            }
+        }
 
         LaunchedEffect(sessionStore) {
             try {
@@ -281,12 +319,7 @@ fun App() {
             val fresh = forceRefresh
             forceRefresh = false
             try {
-                coroutineScope {
-                    val account = async { accountApi.load(active, days, refresh = fresh) }
-                    val probes = async { lineProber.probeLines() }
-                    accountData = account.await()
-                    lines = probes.await()
-                }
+                accountData = accountApi.load(active, days, refresh = fresh)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: AccountSessionExpired) {
@@ -365,19 +398,25 @@ fun App() {
                                 )
                                 Text(page.label, style = MaterialTheme.typography.titleLarge)
                             }
-                            if (session != null) {
+                            if (session != null || page == Page.Lines) {
                                 FilledTonalButton(
                                     onClick = {
                                         if (page == Page.Keys) keyManager?.load(force = true)
-                                        else {
+                                        else if (page == Page.Lines) {
+                                            lineRevision++
+                                            toast("正在刷新线路与渠道状态")
+                                        } else {
                                             forceRefresh = true
                                             revision++
                                             toast("正在刷新监控数据")
                                         }
                                     },
                                     enabled =
-                                        if (page == Page.Keys) keyManager?.busy == false
-                                        else !loading,
+                                        when (page) {
+                                            Page.Keys -> keyManager?.busy == false
+                                            Page.Lines -> !probing && !channelLoading
+                                            else -> !loading
+                                        },
                                     contentPadding =
                                         PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                                 ) {
@@ -448,6 +487,11 @@ fun App() {
                                 }
                             } else if (page == Page.Keys && keyManager != null) {
                                 item { KeyManagementPanel(keyManager) }
+                            } else if (page == Page.Lines) {
+                                item { LinesPanel(lines, probing) }
+                                item {
+                                    ChannelStatusPanel(channelStatus, channelLoading, channelError)
+                                }
                             } else {
                                 storageMessage?.let { message ->
                                     item { Notice(message, error = true) }
@@ -582,11 +626,7 @@ fun App() {
                                                     }
                                                 }
                                             }
-                                        Page.Lines -> {
-                                            if (lines.isNotEmpty()) item { LinesPanel(lines) }
-                                            else if (!loading && error == null)
-                                                item { Notice("线路数据暂不可用。") }
-                                        }
+                                        Page.Lines,
                                         Page.Keys,
                                         Page.Settings -> Unit
                                     }
@@ -691,8 +731,10 @@ private fun ModelPanel(models: List<ModelUsage>) {
 }
 
 @Composable
-private fun LinesPanel(lines: List<LineHealth>) {
+private fun LinesPanel(lines: List<LineHealth>, loading: Boolean) {
     Panel("线路健康") {
+        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (lines.isEmpty()) Text(if (loading) "正在匿名探测接入线路…" else "尚无线路探测结果。")
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "${lines.count { it.reachable }} / ${lines.size}",

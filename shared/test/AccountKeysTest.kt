@@ -19,6 +19,178 @@ class AccountKeysTest {
     private fun envelope(data: String) = """{"success":true,"code":0,"data":$data}"""
 
     @Test
+    fun channelRequestsUseExactPathsAndBodies() = runTest {
+        val seen = mutableListOf<String>()
+        val client =
+            AccountClient(
+                HttpClient(
+                    MockEngine { request ->
+                        assertEquals(
+                            "Bearer account-jwt",
+                            request.headers[HttpHeaders.Authorization],
+                        )
+                        assertNull(request.headers[HttpHeaders.Cookie])
+                        assertTrue(request.url.parameters.isEmpty())
+                        seen += "${request.method.value} ${request.url.encodedPath}"
+                        when (seen.size) {
+                            1 ->
+                                respond(
+                                    envelope(
+                                        """[{"id":1,"name":"one","default_routed":true,"billing_multiplier":"1.5"},{"id":"2","name":"two","default_routed":false,"billing_multiplier":null}]"""
+                                    )
+                                )
+                            2 -> respond(envelope("""{"channel_ids":[1,"2",1]}"""))
+                            3 -> {
+                                assertEquals(
+                                    Json.parseToJsonElement("""{"provider_ids":[1,99]}"""),
+                                    Json.parseToJsonElement((request.body as TextContent).text),
+                                )
+                                respond("", HttpStatusCode.NoContent)
+                            }
+                            else -> {
+                                assertEquals(
+                                    Json.parseToJsonElement("""{"provider_ids":[]}"""),
+                                    Json.parseToJsonElement((request.body as TextContent).text),
+                                )
+                                respond(envelope("null"))
+                            }
+                        }
+                    }
+                )
+            )
+        assertEquals(
+            listOf(ApiKeyChannel(1, "one", true, 1.5), ApiKeyChannel(2, "two", false, null)),
+            client.listApiKeyChannels(session),
+        )
+        assertEquals(setOf(1L, 2L), client.getApiKeyChannels(session, 42))
+        client.setApiKeyChannels(session, 42, linkedSetOf(1L, 99L))
+        client.setApiKeyChannels(session, 42, emptySet())
+        assertEquals(
+            listOf(
+                "GET /api/my/channels",
+                "GET /api/tokens/42/channels",
+                "PUT /api/tokens/42/channels",
+                "PUT /api/tokens/42/channels",
+            ),
+            seen,
+        )
+        client.close()
+    }
+
+    @Test
+    fun channelResponsesAndInputsAreValidated() = runTest {
+        var response = ""
+        var calls = 0
+        val client =
+            AccountClient(
+                HttpClient(
+                    MockEngine {
+                        calls++
+                        respond(envelope(response))
+                    }
+                )
+            )
+        assertFailsWith<AccountSessionExpired> {
+            client.listApiKeyChannels(AccountSession("bad token", null))
+        }
+        assertFailsWith<AccountAccessException> { client.getApiKeyChannels(session, 0) }
+        assertFailsWith<AccountAccessException> {
+            client.setApiKeyChannels(session, -1, emptySet())
+        }
+        assertFailsWith<AccountAccessException> { client.setApiKeyChannels(session, 1, setOf(0)) }
+        assertEquals(0, calls)
+        for (data in
+            listOf(
+                "null",
+                "{}",
+                "[null]",
+                """[{"id":0,"name":"x","default_routed":true}]""",
+                """[{"id":1,"name":3,"default_routed":true}]""",
+                """[{"id":1,"name":"x"}]""",
+                """[{"id":1,"name":"x","default_routed":"true"}]""",
+                """[{"id":1,"name":"x","default_routed":true},{"id":1,"name":"y","default_routed":false}]""",
+            )) {
+            response = data
+            assertFailsWith<AccountAccessException> { client.listApiKeyChannels(session) }
+        }
+        response = """[{"id":1,"name":"x","default_routed":false,"billing_multiplier":"NaN"}]"""
+        assertNull(client.listApiKeyChannels(session).single().billingMultiplier)
+        for (data in
+            listOf(
+                "null",
+                "{}",
+                """{"channel_ids":null}""",
+                """{"channel_ids":[-1]}""",
+                """{"channel_ids":[0]}""",
+                """{"channel_ids":[1.5]}""",
+                """{"channel_ids":[null]}""",
+            )) {
+            response = data
+            assertFailsWith<AccountAccessException> { client.getApiKeyChannels(session, 1) }
+        }
+        response = """{"channel_ids":[]}"""
+        assertEquals(emptySet(), client.getApiKeyChannels(session, 1))
+        client.close()
+    }
+
+    @Test
+    fun channelSaveFailuresAreSafeAndNotRetried() = runTest {
+        for (status in
+            listOf(
+                HttpStatusCode.Unauthorized,
+                HttpStatusCode.TooManyRequests,
+                HttpStatusCode.InternalServerError,
+            )) {
+            var calls = 0
+            val client =
+                AccountClient(
+                    HttpClient(
+                        MockEngine {
+                            calls++
+                            respond("""{"message":"private-secret"}""", status)
+                        }
+                    )
+                )
+            val error =
+                if (status == HttpStatusCode.Unauthorized)
+                    assertFailsWith<AccountSessionExpired> {
+                        client.setApiKeyChannels(session, 1, setOf(2))
+                    }
+                else
+                    assertFailsWith<AccountAccessException> {
+                        client.setApiKeyChannels(session, 1, setOf(2))
+                    }
+            assertFalse(error.message.orEmpty().contains("private-secret"))
+            if (status != HttpStatusCode.Unauthorized)
+                assertTrue(error.message.orEmpty().contains("重新读取配置"))
+            assertEquals(1, calls)
+            client.close()
+        }
+        var calls = 0
+        val client =
+            AccountClient(
+                HttpClient(
+                    MockEngine {
+                        calls++
+                        throw CancellationException("cancelled")
+                    }
+                )
+            )
+        assertFailsWith<CancellationException> { client.setApiKeyChannels(session, 1, emptySet()) }
+        assertEquals(1, calls)
+        client.close()
+        val offline =
+            AccountClient(HttpClient(MockEngine { throw IllegalStateException("private-secret") }))
+        val error =
+            assertFailsWith<AccountAccessException> {
+                offline.setApiKeyChannels(session, 1, emptySet())
+            }
+        assertTrue(error.message.orEmpty().contains("渠道保存结果未确认"))
+        assertFalse(error.message.orEmpty().contains("private-secret"))
+        offline.close()
+    }
+
+    @Test
     fun listUsesVerifiedOwnerAndUnpagedArray() = runTest {
         val seen = mutableListOf<String>()
         val client =

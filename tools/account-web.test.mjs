@@ -179,3 +179,26 @@ test("a stalled upstream is stopped at the deadline", async (t) => {
     t.mock.timers.reset();
   }
 });
+
+test("public channel status allows only the anonymous 24 hour query", async (t) => {
+  const { origin, calls } = await fixture(t);
+  const route = "/krill-account/api/public/channel-status";
+  for (const headers of [{}, { Authorization: "Bearer private", Cookie: "private-cookie" }]) {
+    assert.equal((await fetch(origin + route + "?hours=24", { headers })).status, 200);
+    assert.equal(calls.at(-1).path, "/api/public/channel-status?hours=24");
+    assert.equal(calls.at(-1).headers.Authorization, undefined);
+    assert.equal(calls.at(-1).headers.Cookie, undefined);
+  }
+  for (const query of ["", "?hours=72", "?hours=168", "?hours=24&hours=24", "?hours=24&x=1", "?x=24"])
+    assert.equal((await fetch(origin + route + query)).status, 405);
+  assert.equal((await fetch(origin + route + "?hours=24", { method: "POST" })).status, 405);
+  assert.equal(calls.length, 2);
+});
+
+test("only public channel status accepts responses above the private limit", async (t) => {
+  const big = await fixture(t, "x".repeat(2 * 1024 * 1024 + 1));
+  assert.equal((await fetch(big.origin + "/krill-account/api/public/channel-status?hours=24")).status, 200);
+  assert.equal((await fetch(big.origin + "/krill-account/api/credits", { headers: { Authorization: "Bearer test" } })).status, 502);
+  const excessive = await fixture(t, "x".repeat(8 * 1024 * 1024 + 1));
+  assert.equal((await fetch(excessive.origin + "/krill-account/api/public/channel-status?hours=24")).status, 502);
+});

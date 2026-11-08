@@ -217,6 +217,57 @@ class AccountClient(
         return ManagedKeyList(accountId, items.map { parseManagedKey(it) })
     }
 
+    suspend fun listApiKeyChannels(session: AccountSession): List<ApiKeyChannel> {
+        checkKeySession(session)
+        val items =
+            requestElement("/api/my/channels", session.token) as? JsonArray
+                ?: throw AccountAccessException("账号接口响应格式无效")
+        val channels = items.map { value ->
+            val obj = value as? JsonObject ?: throw AccountAccessException("账号接口响应格式无效")
+            val id =
+                obj.count("id")?.takeIf { it > 0 } ?: throw AccountAccessException("账号接口响应格式无效")
+            val name = obj.text("name") ?: throw AccountAccessException("账号接口响应格式无效")
+            val routed =
+                (obj["default_routed"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+                    ?: throw AccountAccessException("账号接口响应格式无效")
+            ApiKeyChannel(id, name, routed, obj.amount("billing_multiplier"))
+        }
+        if (channels.map { it.id }.toSet().size != channels.size)
+            throw AccountAccessException("账号接口响应格式无效")
+        return channels
+    }
+
+    suspend fun getApiKeyChannels(session: AccountSession, id: Long): Set<Long> {
+        checkKeySession(session)
+        checkKeyId(id)
+        val data =
+            requestElement("/api/tokens/$id/channels", session.token) as? JsonObject
+                ?: throw AccountAccessException("账号接口响应格式无效")
+        val ids = data["channel_ids"] as? JsonArray ?: throw AccountAccessException("账号接口响应格式无效")
+        return ids.map { value ->
+                (value as? JsonPrimitive)?.contentOrNull?.toLongOrNull()?.takeIf { it > 0 }
+                    ?: throw AccountAccessException("账号接口响应格式无效")
+            }
+            .toSet()
+    }
+
+    suspend fun setApiKeyChannels(session: AccountSession, id: Long, channelIds: Set<Long>) {
+        checkKeySession(session)
+        checkKeyId(id)
+        channelIds.forEach(::checkKeyId)
+        try {
+            requestElement(
+                "/api/tokens/$id/channels",
+                session.token,
+                buildJsonObject { putJsonArray("provider_ids") { channelIds.forEach { add(it) } } },
+                HttpMethod.Put,
+                allowEmpty = true,
+            )
+        } catch (e: AccountAccessException) {
+            throw AccountAccessException("${e.message}；渠道保存结果未确认，请重新读取配置")
+        }
+    }
+
     suspend fun createApiKey(session: AccountSession, name: String): ApiKeySecret {
         checkKeySession(session)
         return secretMutation {

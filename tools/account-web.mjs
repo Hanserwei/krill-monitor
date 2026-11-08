@@ -18,6 +18,7 @@ const allowed = new Set([
   "POST /api/auth/login/send-code",
   "POST /api/auth/login/verify",
   "GET /api/public/auth-settings",
+  "GET /api/public/channel-status",
   "GET /api/auth/me",
   "GET /api/subscription",
   "GET /api/credits",
@@ -80,12 +81,14 @@ export function createAccountServer(
       const url = new URL(request.url, "http://" + host);
       if (url.pathname.startsWith("/krill-account/")) {
         const endpoint = url.pathname.slice("/krill-account".length);
-        if (!allowed.has(`${request.method} ${endpoint}`) || url.search)
+        const publicStatus = endpoint === "/api/public/channel-status";
+        const validQuery = publicStatus ? url.search === "?hours=24" : !url.search;
+        if (!allowed.has(`${request.method} ${endpoint}`) || !validQuery)
           return fail(response, 405, "Account endpoint is not allowed");
         const authorization = request.headers.authorization;
         const publicAuth =
           endpoint.startsWith("/api/auth/login") ||
-          endpoint === "/api/public/auth-settings";
+          endpoint === "/api/public/auth-settings" || publicStatus;
         if (
           !publicAuth &&
           (!authorization || !/^Bearer [^\s]{1,16384}$/.test(authorization))
@@ -110,13 +113,13 @@ export function createAccountServer(
             protocol: "https:",
             hostname: "www.krill-code.com",
             port: 443,
-            path: endpoint,
+            path: endpoint + (publicStatus ? "?hours=24" : ""),
             method: request.method,
             headers,
           },
           async (upstream) => {
             try {
-              const bytes = await limited(upstream, 2 * 1024 * 1024);
+              const bytes = await limited(upstream, (publicStatus ? 8 : 2) * 1024 * 1024);
               if (finished) return;
               finished = true;
               clearTimeout(timer);
