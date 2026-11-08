@@ -1,15 +1,14 @@
 package com.hanserwei.krill_monitor
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,25 +19,22 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.hanserwei.krill_monitor.resources.Res
+import com.hanserwei.krill_monitor.resources.krill_logo
 import com.hanserwei.krill_monitor.resources.noto_sans_sc
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.jetbrains.compose.reload.DevelopmentEntryPoint
 import org.jetbrains.compose.resources.Font
-
-private data class Connection(val key: String, val line: RelayLine)
+import org.jetbrains.compose.resources.painterResource
 
 private fun navIcon(name: String, draw: PathBuilder.() -> Unit) =
     ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
@@ -176,22 +172,13 @@ private enum class Page(val label: String, val icon: ImageVector) {
 @DevelopmentEntryPoint
 fun App() {
     val fontFamily = FontFamily(Font(Res.font.noto_sans_sc))
-    val colors =
-        if (isSystemInDarkTheme()) darkColorScheme(primary = Color(0xFF80D5C1))
-        else
-            lightColorScheme(
-                primary = Color(0xFF006B5B),
-                primaryContainer = Color(0xFFB8F2DE),
-                background = Color(0xFFF4F7F6),
-            )
-    MaterialTheme(colorScheme = colors, typography = Typography(fontFamily = fontFamily)) {
-        var key by remember { mutableStateOf("") }
-        val keyStore = remember { createMonitorKeyStore() }
-        var rememberKey by remember { mutableStateOf(false) }
+    val colors = monitorColors(isSystemInDarkTheme())
+    MaterialTheme(colorScheme = colors, typography = monitorTypography(fontFamily)) {
+        val toast = rememberAppToast()
+        val sessionStore = remember { createSessionStore() }
         var storageMessage by remember { mutableStateOf<String?>(null) }
         var storageLoaded by remember { mutableStateOf(false) }
-        var selectedLine by remember { mutableStateOf(RelayLine.Overseas) }
-        var connection by remember { mutableStateOf<Connection?>(null) }
+        var session by remember { mutableStateOf<AccountSession?>(null) }
         var days by remember { mutableIntStateOf(7) }
         var revision by remember { mutableIntStateOf(0) }
         var page by remember { mutableStateOf(Page.Settings) }
@@ -203,49 +190,66 @@ fun App() {
                 rememberLazyListState(),
                 rememberLazyListState(),
             )
-        // 换 Key 时销毁客户端及其缓存，避免串用账户数据。
-        val client = remember(connection?.key) { connection?.let { MonitorClient() } }
-        var snapshot by remember(connection, days) { mutableStateOf<DashboardSnapshot?>(null) }
-        var loading by remember(connection, days) { mutableStateOf(false) }
-        var error by remember(connection, days) { mutableStateOf<String?>(null) }
+        val accountApi = remember(session?.token) { AccountClient(baseUrl = accountApiBaseUrl()) }
+        DisposableEffect(accountApi) { onDispose { accountApi.close() } }
+        val lineProber = remember { LineProber() }
+        DisposableEffect(lineProber) { onDispose { lineProber.close() } }
+        var accountData by remember(session, days) { mutableStateOf<AccountDashboard?>(null) }
+        var lines by remember(session) { mutableStateOf<List<LineHealth>>(emptyList()) }
+        var loading by remember(session, days) { mutableStateOf(false) }
+        var error by remember(session, days) { mutableStateOf<String?>(null) }
 
-        DisposableEffect(client) { onDispose { client?.close() } }
-        LaunchedEffect(keyStore) {
+        LaunchedEffect(sessionStore) {
             try {
-                keyStore
+                if (!sessionStore.clearLegacyKey()) storageMessage = "清除旧登录数据失败，请检查本地存储。"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                storageMessage = "清除旧登录数据失败，请检查本地存储。"
+            }
+            try {
+                sessionStore
                     .load()
                     ?.takeIf { it.isNotBlank() }
                     ?.let { saved ->
-                        key = saved
-                        rememberKey = true
-                        connection = Connection(saved, RelayLine.Overseas)
+                        session = AccountSession(saved, null)
                         page = Page.Overview
                     }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                storageMessage = "读取已保存的 Key 失败，请重新输入。"
+                storageMessage = listOfNotNull(storageMessage, "读取账号会话失败，请重新登录。").joinToString("\n")
             } finally {
                 storageLoaded = true
             }
         }
-        // 配置变化会取消旧查询，避免迟到的结果覆盖新 Key 或日期范围。
-        LaunchedEffect(storageLoaded, connection, days, revision) {
+        // 配置变化会取消旧查询，避免迟到的结果覆盖新账号或日期范围。
+        LaunchedEffect(storageLoaded, session, days, revision) {
             if (!storageLoaded) return@LaunchedEffect
-            val active = connection ?: return@LaunchedEffect
-            val api = client ?: return@LaunchedEffect
+            val active = session ?: return@LaunchedEffect
             loading = true
             error = null
             try {
-                snapshot = api.load(active.key, active.line, days)
+                coroutineScope {
+                    val account = async { accountApi.load(active, days) }
+                    val probes = async { lineProber.probeLines() }
+                    accountData = account.await()
+                    lines = probes.await()
+                }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: MonitorException) {
-                snapshot = null
-                error = e.message ?: "查询失败，请稍后重试。"
+            } catch (_: AccountSessionExpired) {
+                val cleared = runCatching { sessionStore.clear() }.getOrDefault(false)
+                session = null
+                page = Page.Settings
+                storageMessage = if (cleared) "登录已过期，请重新登录。" else "登录已过期；本地会话删除失败，请重试退出。"
+                toast(storageMessage ?: "登录已过期，请重新登录。")
+            } catch (e: AccountAccessException) {
+                accountData = null
+                error = e.message
             } catch (_: Exception) {
-                snapshot = null
-                error = "无法完成查询，请检查网络后重试。Web 端还需要中转站允许跨域请求。"
+                accountData = null
+                error = "无法完成查询，请检查网络后重试。Web 端还需要服务端允许跨域请求。"
             } finally {
                 loading = false
             }
@@ -258,7 +262,10 @@ fun App() {
                 contentWindowInsets = WindowInsets.safeDrawing,
                 bottomBar = {
                     if (!wide) {
-                        NavigationBar {
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 0.dp,
+                        ) {
                             Page.entries.forEach { destination ->
                                 NavigationBarItem(
                                     selected = page == destination,
@@ -273,7 +280,10 @@ fun App() {
             ) { padding ->
                 Row(Modifier.fillMaxSize().padding(padding)) {
                     if (wide) {
-                        NavigationRail(windowInsets = WindowInsets(0, 0, 0, 0)) {
+                        NavigationRail(
+                            windowInsets = WindowInsets(0, 0, 0, 0),
+                            containerColor = MaterialTheme.colorScheme.background,
+                        ) {
                             Page.entries.forEach { destination ->
                                 NavigationRailItem(
                                     selected = page == destination,
@@ -291,26 +301,42 @@ fun App() {
                         Row(
                             Modifier.widthIn(max = 1120.dp)
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                                .padding(horizontal = 20.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
+                            Image(
+                                painterResource(Res.drawable.krill_logo),
+                                "Krill Monitor Logo",
+                                Modifier.size(42.dp),
+                            )
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    "Krill Monitor · ${page.label}",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold,
+                                    "KRILL MONITOR",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
                                 )
-                                connection?.let { active ->
+                                Text(page.label, style = MaterialTheme.typography.titleLarge)
+                                session?.let { active ->
                                     Text(
-                                        "${active.line.label} · Key 尾号 ${active.key.takeLast(4)}",
+                                        "Krill 账号 · ${accountData?.email ?: active.email ?: "已授权"}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             }
-                            if (connection != null) {
-                                OutlinedButton(onClick = { revision++ }, enabled = !loading) {
+                            if (session != null) {
+                                FilledTonalButton(
+                                    onClick = {
+                                        revision++
+                                        toast("正在刷新监控数据")
+                                    },
+                                    enabled = !loading,
+                                    contentPadding =
+                                        PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                                ) {
                                     Text("刷新")
                                 }
                             }
@@ -318,45 +344,36 @@ fun App() {
                         LazyColumn(
                             state = scrollStates[page.ordinal],
                             modifier = Modifier.widthIn(max = 1120.dp).fillMaxSize(),
-                            contentPadding = PaddingValues(16.dp),
+                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp),
                         ) {
                             if (page == Page.Settings) {
                                 item {
-                                    ConnectionPanel(
-                                        key = key,
-                                        onKeyChange = { key = it },
-                                        line = selectedLine,
-                                        onLineChange = { selectedLine = it },
-                                        rememberKey = rememberKey,
-                                        onRememberKeyChange = { rememberKey = it },
-                                        storageSecure = keyStore.isSecure,
-                                        connected = connection != null,
-                                        onConnect = {
-                                            val saved = runCatching {
-                                                if (rememberKey) keyStore.save(key.trim())
-                                                else keyStore.clear()
+                                    AccountLoginPanel(
+                                        client = accountApi,
+                                        connected = session != null,
+                                        email = accountData?.email ?: session?.email,
+                                        secureStorage = sessionStore.isSecure,
+                                        onLogin = { signedIn, persist ->
+                                            val stored = runCatching {
+                                                if (persist) sessionStore.save(signedIn.token)
+                                                else sessionStore.clear()
                                             }
                                                 .getOrDefault(false)
                                             storageMessage =
-                                                if (saved) null else "Key 本地存储操作失败，请检查设置。"
-                                            val next = Connection(key.trim(), selectedLine)
-                                            if (connection == next) revision++
-                                            else connection = next
+                                                if (stored) null else "账号会话保存失败，仅本次登录有效。"
+                                            session = signedIn
                                             page = Page.Overview
+                                            if (!stored) toast("会话未能保存，下次需要重新登录")
                                         },
-                                        onClear = {
+                                        onLogout = {
                                             val cleared = runCatching {
-                                                keyStore.clear()
+                                                sessionStore.clear()
                                             }
                                                 .getOrDefault(false)
-                                            storageMessage =
-                                                if (cleared) null else "清除本地保存的 Key 失败，请重试。"
-                                            rememberKey = false
-                                            key = ""
-                                            connection = null
-                                            error = null
-                                            page = Page.Settings
+                                            session = null
+                                            storageMessage = if (cleared) null else "账号会话清除失败，请重试。"
+                                            toast(if (cleared) "已退出本应用账号" else "本地登录清除失败，请重试")
                                         },
                                     )
                                 }
@@ -366,13 +383,12 @@ fun App() {
                                 item {
                                     Panel("隐私与统计口径") {
                                         Text(
-                                            if (keyStore.isSecure)
-                                                "可选择在 Android 加密保存 Key；关闭保存或清除 Key 会删除本地记录。线路探测不发送 Key。"
-                                            else
-                                                "可选择在浏览器本地存储 Key，同源脚本可以读取；关闭保存或清除 Key 会删除本地记录。线路探测不发送 Key。"
+                                            if (sessionStore.isSecure)
+                                                "可选择在设备上加密保存账号会话；不保存密码或验证码。线路探测不发送凭据。"
+                                            else "可选择在浏览器本地保存账号会话，同源脚本可读取；不保存密码或验证码。线路探测不发送凭据。"
                                         )
-                                        Text("统计归属由服务端决定，可能是账户汇总，不能确认是单个 Key 的独立用量。")
-                                        Text("金额单位 USD，未知数据以 — 表示；日期按 UTC。")
+                                        Text("查询个人账户；钱包余额与套餐额度独立。")
+                                        Text("金额单位 USD，未知数据以 — 表示；日期按北京时间 UTC+8。")
                                     }
                                 }
                             } else {
@@ -400,12 +416,12 @@ fun App() {
                                         }
                                     }
                                 }
-                                if (connection == null) {
+                                if (session == null) {
                                     item {
                                         Panel("开始监控") {
-                                            Text("配置中转 Key 和查询线路后，即可查看${page.label}。")
+                                            Text("登录 Krill 账号后即可查看${page.label}。")
                                             Button(onClick = { page = Page.Settings }) {
-                                                Text("前往设置")
+                                                Text("前往登录")
                                             }
                                         }
                                     }
@@ -417,7 +433,7 @@ fun App() {
                                             ) {
                                                 LinearProgressIndicator(Modifier.fillMaxWidth())
                                                 Text(
-                                                    if (snapshot == null) "正在查询账户、用量与线路…"
+                                                    if (accountData == null) "正在查询账户、用量与线路…"
                                                     else "正在刷新，当前显示上次查询结果…",
                                                     style = MaterialTheme.typography.bodySmall,
                                                 )
@@ -425,11 +441,14 @@ fun App() {
                                         }
                                     }
                                     error?.let { message -> item { Notice(message, error = true) } }
-                                    snapshot?.let { data ->
-                                        when (page) {
-                                            Page.Overview -> {
-                                                item { Overview(data, days) }
-                                                item { AccountPanel(data.account, data.updatedAt) }
+                                    when (page) {
+                                        Page.Overview ->
+                                            accountData?.let { data ->
+                                                item { AccountOverview(data, days) }
+                                                item { AccountSubscriptions(data) }
+                                                data.warnings.forEach { message ->
+                                                    item { Notice(message, error = true) }
+                                                }
                                                 if (
                                                     data.usage == null ||
                                                         data.warnings.isNotEmpty() ||
@@ -441,18 +460,13 @@ fun App() {
                                                 }
                                                 item {
                                                     Text(
-                                                        "查询于 ${utcTimeText(data.updatedAt)}",
+                                                        "查询于 ${utcTimeText(data.fetchedAt)}",
                                                         style = MaterialTheme.typography.bodySmall,
                                                     )
                                                 }
                                             }
-                                            Page.Usage -> {
-                                                item {
-                                                    Text(
-                                                        "统计可能包含账户其他 Key 的用量。",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                    )
-                                                }
+                                        Page.Usage ->
+                                            accountData?.let { data ->
                                                 data.warnings.distinct().forEach { message ->
                                                     item { Notice(message, error = true) }
                                                 }
@@ -466,7 +480,7 @@ fun App() {
                                                                 Arrangement.spacedBy(8.dp)
                                                         ) {
                                                             Text(
-                                                                "${if (usage.stale) "过期缓存" else if (usage.fromCache) "缓存结果" else "最新结果"} · ${utcTimeText(usage.fetchedAt)} · 日期按 UTC",
+                                                                "${if (usage.stale) "过期缓存" else if (usage.fromCache) "缓存结果" else "最新结果"} · ${utcTimeText(usage.fetchedAt)} · 日期按 ${usage.timezone}",
                                                                 style =
                                                                     MaterialTheme.typography
                                                                         .bodySmall,
@@ -478,24 +492,45 @@ fun App() {
                                                                         MaterialTheme.colorScheme
                                                                             .onSurfaceVariant,
                                                             )
-                                                            Text(
-                                                                "用量缓存 30 分钟；刷新账户与线路时会复用缓存。",
-                                                                style =
-                                                                    MaterialTheme.typography
-                                                                        .bodySmall,
-                                                            )
                                                             usage.warnings.distinct().forEach {
                                                                 Notice(it, error = true)
                                                             }
                                                         }
                                                     }
-                                                    item { DailyPanel(usage.daily) }
+                                                    item { DailyPanel(usage.daily, usage.timezone) }
                                                     item { ModelPanel(usage.models) }
+                                                    item {
+                                                        Panel("统计说明") {
+                                                            Text(
+                                                                "个人账户请求日志 · 北京时间 UTC+8",
+                                                                style =
+                                                                    MaterialTheme.typography
+                                                                        .bodySmall,
+                                                            )
+                                                            Text(
+                                                                "账号统计缓存 5 分钟，刷新时校验登录状态。",
+                                                                style =
+                                                                    MaterialTheme.typography
+                                                                        .bodySmall,
+                                                            )
+                                                            usage.costNote?.let {
+                                                                Text(
+                                                                    it,
+                                                                    style =
+                                                                        MaterialTheme.typography
+                                                                            .bodySmall,
+                                                                )
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
-                                            Page.Lines -> item { LinesPanel(data.lines) }
-                                            Page.Settings -> Unit
+                                        Page.Lines -> {
+                                            if (lines.isNotEmpty()) item { LinesPanel(lines) }
+                                            else if (!loading && error == null)
+                                                item { Notice("线路数据暂不可用。") }
                                         }
+                                        Page.Settings -> Unit
                                     }
                                 }
                             }
@@ -508,245 +543,47 @@ fun App() {
 }
 
 @Composable
-private fun ConnectionPanel(
-    key: String,
-    onKeyChange: (String) -> Unit,
-    line: RelayLine,
-    onLineChange: (RelayLine) -> Unit,
-    rememberKey: Boolean,
-    onRememberKeyChange: (Boolean) -> Unit,
-    storageSecure: Boolean,
-    connected: Boolean,
-    onConnect: () -> Unit,
-    onClear: () -> Unit,
-) {
-    var visible by remember { mutableStateOf(false) }
-    val invalid = key.trim().any { it.isWhitespace() || it.code < 32 || it.code in 127..159 }
-    val canConnect = key.isNotBlank() && !invalid
-    Panel("连接配置") {
-        OutlinedTextField(
-            value = key,
-            onValueChange = onKeyChange,
-            modifier = Modifier.fillMaxWidth().semantics { contentDescription = "中转 API Key" },
-            label = { Text("中转 API Key") },
-            singleLine = true,
-            isError = invalid,
-            supportingText = { Text(if (invalid) "Key 不能包含空白或控制字符。" else "Key 不会写入日志或 URL。") },
-            visualTransformation =
-                if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                TextButton(onClick = { visible = !visible }) { Text(if (visible) "隐藏" else "显示") }
-            },
-            keyboardOptions =
-                KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
-            keyboardActions = KeyboardActions(onGo = { if (canConnect) onConnect() }),
-        )
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier =
-                Modifier.fillMaxWidth()
-                    .heightIn(min = 48.dp)
-                    .toggleable(
-                        value = rememberKey,
-                        role = Role.Checkbox,
-                        onValueChange = onRememberKeyChange,
-                    ),
-        ) {
-            Checkbox(checked = rememberKey, onCheckedChange = null)
-            Text(
-                if (storageSecure) "在设备上加密保存 Key" else "在浏览器本地保存 Key（同源脚本可读取）",
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Text("应用配置时生效；关闭保存会删除已保存的 Key。", style = MaterialTheme.typography.bodySmall)
-        Text("查询线路", style = MaterialTheme.typography.labelLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            RelayLine.entries.forEach { option ->
-                FilterChip(
-                    selected = line == option,
-                    onClick = { onLineChange(option) },
-                    label = { Text(option.label) },
+private fun DailyPanel(daily: List<DailyUsage>, timezone: String) {
+    Panel("费用趋势") {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "${daily.size} 天累计",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    usdText(sumAmounts(daily.map { it.costUsd })),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
                 )
             }
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(
-                onClick = {
-                    visible = false
-                    onConnect()
-                },
-                enabled = canConnect,
-            ) {
-                Text(if (connected) "应用配置" else "开始监控")
-            }
-            TextButton(
-                onClick = {
-                    visible = false
-                    onClear()
-                }
-            ) {
-                Text("清除 Key")
-            }
-        }
-    }
-}
-
-@Composable
-private fun Overview(data: DashboardSnapshot, days: Int) {
-    val account = data.account
-    val daily = data.usage?.daily.orEmpty()
-    val metrics =
-        listOf(
-            Triple(
-                "剩余额度",
-                if (account?.unlimited == true) "不限额" else usdText(account?.remainingUsd),
-                "额度减当月消费的计算值",
-            ),
-            Triple("当月消费", usdText(account?.usedUsd), "UTC 月初至今"),
-            Triple(
-                "近${days}天费用",
-                usdText(sumAmounts(daily.map { it.costUsd })),
-                "USD · 可能包含账户其他 Key",
-            ),
-            Triple("近${days}天请求", countText(sumCounts(daily.map { it.requests })), "服务端聚合请求数"),
-        )
-    BoxWithConstraints {
-        val columns = if (maxWidth < 420.dp) 1 else if (maxWidth < 840.dp) 2 else 4
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            metrics.chunked(columns).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    row.forEach { (label, value, detail) ->
-                        Surface(
-                            Modifier.weight(1f),
-                            shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                        ) {
-                            Column(
-                                Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text(
-                                    label,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    value,
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    detail,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AccountPanel(account: AccountSummary?, now: kotlin.time.Instant) {
-    Panel("账户与额度") {
-        if (account == null) Text("账户信息暂不可用。")
-        else {
-            Text(account.email ?: "服务端未提供账户邮箱", style = MaterialTheme.typography.titleMedium)
-            Text("套餐：${account.plan ?: "未提供"}")
-            Text("订阅额度：${if (account.unlimited) "不限额" else usdText(account.limitUsd)}")
-            val expires = account.expiresAt
             Text(
-                if (expires == null) "到期时间：未提供或未设置"
-                else "到期时间：${utcTimeText(expires)}${if (expires <= now) " · 已到期" else ""}",
-                color =
-                    if (expires != null && expires <= now) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurface,
+                timezone,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
             )
-            if (
-                !account.unlimited &&
-                    account.limitUsd != null &&
-                    account.limitUsd > 0 &&
-                    account.usedUsd != null
-            ) {
-                LinearProgressIndicator(
-                    progress = { (account.usedUsd / account.limitUsd).toFloat().coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            account.warnings.distinct().forEach { Notice(it, error = true) }
         }
-    }
-}
-
-@Composable
-private fun DailyPanel(daily: List<DailyUsage>) {
-    Panel("每日费用") {
+        SpendTrendChart(daily)
         Text(
-            "日期按 UTC · 费用 / 请求数",
-            style = MaterialTheme.typography.bodySmall,
+            "点击图表查看当天费用与请求数",
+            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        val maximum = daily.mapNotNull { it.costUsd }.maxOrNull()?.takeIf { it > 0 } ?: 1.0
-        if (daily.isEmpty()) Text("当前范围内没有每日统计。")
-        daily.forEach { day ->
-            Row(
-                Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(
-                    day.date.takeLast(5),
-                    Modifier.width(48.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                val cost = day.costUsd
-                val barModifier = Modifier.weight(1f).height(8.dp)
-                if (cost == null) {
-                    // 未知值不设置进度语义，避免读屏将它当成零费用。
-                    Box(
-                        barModifier
-                            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                            .semantics {
-                                contentDescription = "${day.date} 费用未知"
-                            }
-                    )
-                } else {
-                    LinearProgressIndicator(
-                        progress = { (cost / maximum).toFloat().coerceIn(0f, 1f) },
-                        modifier =
-                            barModifier.semantics {
-                                contentDescription = "${day.date} 费用 ${usdText(cost)}"
-                            },
-                    )
-                }
-                Column(Modifier.widthIn(min = 84.dp), horizontalAlignment = Alignment.End) {
-                    Text(usdText(day.costUsd), fontWeight = FontWeight.Medium)
-                    Text(
-                        "${countText(day.requests)} 次",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
     }
 }
 
 @Composable
 private fun ModelPanel(models: List<ModelUsage>) {
     Panel("模型用量排行") {
+        ModelShareChart(models)
         Text(
             "按费用优先排序；费用缺失时按请求数排序。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (models.isEmpty()) Text("当前范围内没有模型记录，或服务端未提供模型统计。")
+        val maximum = models.mapNotNull { chartCost(it.costUsd) }.maxOrNull()
         models.forEachIndexed { index, model ->
             if (index > 0) HorizontalDivider()
             Row(
@@ -767,62 +604,113 @@ private fun ModelPanel(models: List<ModelUsage>) {
                 )
                 Text(usdText(model.costUsd), fontWeight = FontWeight.SemiBold)
             }
+            if (chartCost(model.costUsd) != null && maximum != null && maximum > 0) {
+                LinearProgressIndicator(
+                    progress = { (model.costUsd!! / maximum).toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(4.dp),
+                )
+            }
             Text(
-                "请求 ${countText(model.requests)} · 输入 ${countText(model.inputTokens)} · 输出 ${countText(model.outputTokens)}",
+                if (model.totalTokens != null)
+                    "请求 ${countText(model.requests)} · 总 Token ${countText(model.totalTokens)}"
+                else
+                    "请求 ${countText(model.requests)} · 输入 ${countText(model.inputTokens)} · 输出 ${countText(model.outputTokens)}",
                 style = MaterialTheme.typography.bodySmall,
             )
-            Text(
-                "缓存输入 ${countText(model.cachedInputTokens)} · 缓存占比 ${cacheRatioText(model.cachedInputTokens, model.inputTokens)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (model.totalTokens == null)
+                Text(
+                    "缓存输入 ${countText(model.cachedInputTokens)} · 缓存占比 ${cacheRatioText(model.cachedInputTokens, model.inputTokens)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
         }
     }
 }
 
 @Composable
 private fun LinesPanel(lines: List<LineHealth>) {
-    Panel("线路状态") {
-        Text(
-            "不带 Key 的 HTTP 探测；401 表示线路可达，耗时不代表模型生成速度。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    Panel("线路健康") {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${lines.count { it.reachable }} / ${lines.size}",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(12.dp))
+            Text("条线路接口可达", style = MaterialTheme.typography.bodyMedium)
+        }
+        val maximum =
+            lines
+                .filter { it.reachable }
+                .mapNotNull { it.latencyMillis?.takeIf { ms -> ms >= 0 } }
+                .maxOrNull()
+                ?.coerceAtLeast(1) ?: 1L
         lines.forEach { health ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
             ) {
-                Box(
-                    Modifier.size(8.dp)
-                        .background(
-                            if (health.reachable) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.error,
-                            CircleShape,
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Box(
+                            Modifier.size(8.dp)
+                                .background(
+                                    if (health.reachable) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error,
+                                    CircleShape,
+                                )
                         )
-                )
-                Column(Modifier.weight(1f)) {
-                    Text(health.line.label, fontWeight = FontWeight.Medium)
+                        Text(
+                            health.line.label,
+                            Modifier.weight(1f),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            health.latencyMillis?.let { "$it ms" } ?: "—",
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                    val latency = health.latencyMillis
+                    if (health.reachable && latency != null && latency >= 0) {
+                        LinearProgressIndicator(
+                            progress = {
+                                (latency.toDouble() / maximum).toFloat().coerceIn(0f, 1f)
+                            },
+                            modifier =
+                                Modifier.fillMaxWidth().height(7.dp).semantics {
+                                    contentDescription = "${health.line.label} 探测耗时 $latency 毫秒"
+                                },
+                        )
+                    }
                     Text(
-                        health.message ?: health.status?.let { "HTTP $it" } ?: "无法连接",
+                        health.message ?: health.status?.let { "HTTP $it · 接口可达" } ?: "无法连接",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text(health.latencyMillis?.let { "$it ms" } ?: "—")
             }
         }
+        Text(
+            "匿名 HTTP 探测 · 耗时越短越好 · 不代表模型生成速度",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
 @Composable
-private fun Panel(title: String, content: @Composable ColumnScope.() -> Unit) {
+internal fun Panel(title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
         Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
     ) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(
                 title,
                 style = MaterialTheme.typography.titleMedium,

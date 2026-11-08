@@ -51,4 +51,13 @@ class MonitorFormatTest {
     fun timestampsAreExplicitlyUtc() {
         assertEquals("2026-12-31 23:59 UTC", utcTimeText(Instant.parse("2026-12-31T23:59:59Z")))
     }
+
+    @Test
+    fun quotaFormattingKeepsLargeValuesAndUnits() {
+        assertEquals("$12.50", quotaValueText(12.5, "USD"))
+        assertEquals("1,000", quotaValueText(1000.0, "credits"))
+        assertEquals((1e20).toString(), quotaValueText(1e20, "次"))
+        assertEquals("—", quotaValueText(null, "credits"))
+        assertEquals("—", quotaValueText(Double.POSITIVE_INFINITY, "credits"))
+    }
 }

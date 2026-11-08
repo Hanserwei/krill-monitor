@@ -21,26 +21,27 @@ private const val CIPHER_TRANSFORMATION = "AES/GCM/NoPadding"
 
 private var monitorApplicationContext: Context? = null
 
-fun initializeMonitorKeyStore(context: Context) {
+fun initializeSessionStore(context: Context) {
     monitorApplicationContext = context.applicationContext
 }
 
-actual fun createMonitorKeyStore(): MonitorKeyStore =
-    AndroidMonitorKeyStore(monitorApplicationContext)
+actual fun createSessionStore(): SessionStore = AndroidSessionStore(monitorApplicationContext)
 
-private class AndroidMonitorKeyStore(private val context: Context?) : MonitorKeyStore {
+private class AndroidSessionStore(private val context: Context?) : SessionStore {
+    // 保持账号别名和密文记录不变，升级无需重新登录。
+    private val alias = "krill_monitor_session_v1"
+    private val preferenceKey = "account_session"
     override val isSecure = true
 
     override fun load(): String? {
         val preferences =
             context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return null
         return try {
-            val stored = preferences.getString(PREF_KEY, null) ?: return null
+            val stored = preferences.getString(preferenceKey, null) ?: return null
             val payload = Base64.decode(stored, Base64.DEFAULT)
             require(payload.size > GCM_IV_LENGTH + GCM_TAG_LENGTH_BITS / 8)
             val secret =
-                keyStore().getKey(KEY_ALIAS, null) as? SecretKey
-                    ?: error("Keystore key unavailable")
+                keyStore().getKey(alias, null) as? SecretKey ?: error("Keystore key unavailable")
             val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
             cipher.init(
                 Cipher.DECRYPT_MODE,
@@ -54,17 +55,17 @@ private class AndroidMonitorKeyStore(private val context: Context?) : MonitorKey
         } catch (_: Exception) {
             // 失效密钥或损坏密文不能继续复用，清理后让用户重新输入。
             clear()
-            throw IllegalStateException("无法读取已保存的 Key")
+            throw IllegalStateException("无法读取已保存的账号会话")
         }
     }
 
-    override fun save(key: String): Boolean =
+    override fun save(token: String): Boolean =
         try {
             val preferences = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             if (preferences == null) false
             else {
                 val secret =
-                    keyStore().getKey(KEY_ALIAS, null) as? SecretKey
+                    keyStore().getKey(alias, null) as? SecretKey
                         ?: KeyGenerator.getInstance(
                                 KeyProperties.KEY_ALGORITHM_AES,
                                 ANDROID_KEYSTORE_PROVIDER,
@@ -72,7 +73,7 @@ private class AndroidMonitorKeyStore(private val context: Context?) : MonitorKey
                             .apply {
                                 init(
                                     KeyGenParameterSpec.Builder(
-                                            KEY_ALIAS,
+                                            alias,
                                             KeyProperties.PURPOSE_ENCRYPT or
                                                 KeyProperties.PURPOSE_DECRYPT,
                                         )
@@ -87,15 +88,28 @@ private class AndroidMonitorKeyStore(private val context: Context?) : MonitorKey
                 val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
                 // AndroidKeyStore 自行生成随机 IV，不能传入调用方生成的 IV。
                 cipher.init(Cipher.ENCRYPT_MODE, secret)
-                val ciphertext = cipher.doFinal(key.toByteArray(StandardCharsets.UTF_8))
+                val ciphertext = cipher.doFinal(token.toByteArray(StandardCharsets.UTF_8))
                 val stored = Base64.encodeToString(cipher.iv + ciphertext, Base64.NO_WRAP)
-                preferences.edit().putString(PREF_KEY, stored).commit()
+                preferences.edit().putString(preferenceKey, stored).commit()
             }
         } catch (_: Exception) {
             false
         }
 
     override fun clear(): Boolean =
+        try {
+            val preferences = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (preferences == null) false
+            else {
+                val cleared = preferences.edit().remove(preferenceKey).commit()
+                keyStore().deleteEntry(alias)
+                cleared
+            }
+        } catch (_: Exception) {
+            false
+        }
+
+    override fun clearLegacyKey(): Boolean =
         try {
             val preferences = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             if (preferences == null) false

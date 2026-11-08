@@ -46,3 +46,11 @@ internal fun cacheRatioText(cached: Long?, input: Long?): String {
 
 internal fun utcTimeText(instant: Instant): String =
     instant.toString().take(16).replace('T', ' ') + " UTC"
+
+internal fun quotaValueText(value: Double?, unit: String): String =
+    when {
+        unit == "USD" -> usdText(value)
+        value == null || !value.isFinite() || value < 0 -> "—"
+        value < Long.MAX_VALUE.toDouble() && value % 1.0 == 0.0 -> countText(value.toLong())
+        else -> value.toString()
+    }

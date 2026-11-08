@@ -1,0 +1,181 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createAccountServer } from "./account-web.mjs";
+
+async function fixture(
+  t,
+  responseBody = '{"success":true,"data":{}}',
+  status = 200,
+  fault = null,
+) {
+  const root = await mkdtemp(path.join(tmpdir(), "krill-web-"));
+  await writeFile(path.join(root, "index.html"), "<html>Monitor</html>");
+  await writeFile(path.join(root, "app.wasm"), "wasm");
+  const calls = [];
+  const transport = (options, callback) => {
+    const outgoing = new EventEmitter();
+    outgoing.destroy = () => {};
+    outgoing.end = (body) => {
+      calls.push({ ...options, body: body.toString() });
+      queueMicrotask(() => {
+        if (fault === "timeout") return;
+        if (fault === "network")
+          return outgoing.emit("error", new Error("private credential"));
+        const upstream = Readable.from([Buffer.from(responseBody)]);
+        upstream.statusCode = status;
+        upstream.headers = {
+          "set-cookie": "private-cookie",
+          "retry-after": "60",
+        };
+        callback(upstream);
+      });
+    };
+    return outgoing;
+  };
+  const server = createAccountServer(root, transport);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  });
+  return { origin: `http://127.0.0.1:${server.address().port}`, calls };
+}
+
+test("only whitelisted requests go to the fixed official host without cookies", async (t) => {
+  const { origin, calls } = await fixture(t);
+  const response = await fetch(origin + "/krill-account/api/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: "private-browser-cookie",
+    },
+    body: '{"email":"test@example.test","password":"test-only"}',
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("set-cookie"), null);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(calls[0].hostname, "www.krill-code.com");
+  assert.equal(calls[0].headers.Cookie, undefined);
+  assert.equal(calls[0].path, "/api/auth/login");
+  assert.equal(JSON.parse(calls[0].body).password, "test-only");
+  const read = await fetch(origin + "/krill-account/api/credits", {
+    headers: { Authorization: "Bearer fake-jwt", Cookie: "private-cookie" },
+  });
+  assert.equal(read.status, 200);
+  assert.equal(calls[1].headers.Authorization, "Bearer fake-jwt");
+  assert.equal(calls[1].headers.Cookie, undefined);
+});
+
+test("email-code endpoints and public settings do not forward stale authorization", async (t) => {
+  const { origin, calls } = await fixture(t);
+  for (const [route, body] of [
+    ["/api/public/auth-settings", null],
+    ["/api/auth/login/send-code", { email: "demo@example.test" }],
+    [
+      "/api/auth/login/verify",
+      { email: "demo@example.test", verification_code: "123456" },
+    ],
+  ]) {
+    const response = await fetch(origin + "/krill-account" + route, {
+      method: body === null ? "GET" : "POST",
+      headers: {
+        Authorization: "Bearer stale-test-session",
+        "Content-Type": "application/json",
+        Cookie: "private-cookie",
+      },
+      body: body === null ? undefined : JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(calls.at(-1).path, route);
+    assert.equal(calls.at(-1).headers.Authorization, undefined);
+    assert.equal(calls.at(-1).headers.Cookie, undefined);
+    if (body !== null) assert.deepEqual(JSON.parse(calls.at(-1).body), body);
+  }
+});
+
+test("no open proxy, third-party origin, query parameters or cookie-only authorization", async (t) => {
+  const { origin, calls } = await fixture(t);
+  for (const [route, options, expected] of [
+    ["/krill-account/api/auth/accept-tos", { method: "POST" }, 405],
+    ["/krill-account/api/credits?target=evil", {}, 405],
+    [
+      "/krill-account/api/credits",
+      { headers: { Cookie: "krill_jwt=cookie" } },
+      401,
+    ],
+    [
+      "/krill-account/api/auth/login",
+      { method: "POST", headers: { Origin: "https://evil.example" } },
+      403,
+    ],
+  ])
+    assert.equal((await fetch(origin + route, options)).status, expected);
+  assert.equal(calls.length, 0);
+});
+
+test("upstream authorization and rate-limit statuses survive, redirects do not", async (t) => {
+  for (const status of [401, 429, 302]) {
+    const { origin } = await fixture(t, '{"success":false}', status);
+    const response = await fetch(origin + "/krill-account/api/credits", {
+      headers: { Authorization: "Bearer fake-jwt" },
+    });
+    assert.equal(response.status, status === 302 ? 502 : status);
+    if (status === 429) assert.equal(response.headers.get("retry-after"), "60");
+  }
+});
+
+test("oversized upstream responses are rejected and static assets have the correct MIME", async (t) => {
+  const { origin } = await fixture(t, "x".repeat(2 * 1024 * 1024 + 1));
+  const response = await fetch(origin + "/krill-account/api/credits", {
+    headers: { Authorization: "Bearer fake-jwt" },
+  });
+  assert.equal(response.status, 502);
+  assert.equal(
+    (await fetch(origin + "/app.wasm")).headers.get("content-type"),
+    "application/wasm",
+  );
+  assert.match(await (await fetch(origin + "/settings")).text(), /Monitor/);
+  assert.equal((await fetch(origin + "/%2e%2e%2fprivate")).status, 403);
+  assert.equal((await fetch(origin + "/api/subscription")).status, 404);
+});
+
+test("oversized login requests never reach the upstream", async (t) => {
+  const { origin, calls } = await fixture(t);
+  const response = await fetch(origin + "/krill-account/api/auth/login", {
+    method: "POST",
+    body: "x".repeat(65537),
+  });
+  assert.equal(response.status, 413);
+  assert.equal(calls.length, 0);
+});
+
+test("upstream network failures return a safe error", async (t) => {
+  const { origin } = await fixture(t, "", 200, "network");
+  const response = await fetch(origin + "/krill-account/api/credits", {
+    headers: { Authorization: "Bearer fake-jwt" },
+  });
+  assert.equal(response.status, 502);
+  assert.doesNotMatch(await response.text(), /private credential|fake-jwt/);
+});
+
+test("a stalled upstream is stopped at the deadline", async (t) => {
+  const { origin, calls } = await fixture(t, "", 200, "timeout");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const pending = fetch(origin + "/krill-account/api/credits", {
+      headers: { Authorization: "Bearer fake-jwt" },
+    });
+    while (calls.length === 0)
+      await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(15001);
+    assert.equal((await pending).status, 504);
+  } finally {
+    t.mock.timers.reset();
+  }
+});

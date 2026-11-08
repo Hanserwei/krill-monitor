@@ -2,6 +2,8 @@
 
 本文依据 Superba 上游源码的固定版本 [`3ecc0db00f0b536ee070d6cb1c56e01566b3115a`](https://github.com/krill-lab/superba/tree/3ecc0db00f0b536ee070d6cb1c56e01566b3115a) 整理，是客户端使用方式的记录，不是服务端协议保证。末尾记录了实际只读联调结果；权限与统计归属仍需以服务端契约为准。
 
+当前应用仅保留账号登录。下文 Key 兼容接口为早期研究存档，已不再由应用调用；运行时只使用官网账号接口和匿名线路探测。历史本地 Key 在升级启动时清理，现有账号会话保留。
+
 ## 线路与鉴权
 
 三条内置线路的 origin 分别是国内优化 `https://api-slb.kbsfdxc.net`、海外 `https://api.kbsfdxc.net`、三网优化 CDN `https://api.kbsfdxc.com`。接口路径拼接到选定的 origin；账户及用量接口使用 `Authorization: Bearer <key>`。不要将 Key 写入日志、URL 或文档。[线路定义](https://github.com/krill-lab/superba/blob/3ecc0db00f0b536ee070d6cb1c56e01566b3115a/crates/superba-core/src/catalog.rs#L26-L41)、[鉴权和接口概览](https://github.com/krill-lab/superba/blob/3ecc0db00f0b536ee070d6cb1c56e01566b3115a/crates/superba-core/src/usage.rs#L1-L15)。
@@ -74,10 +76,54 @@ Superba router 的 `/_superba/v1/` 是**本地管理接口**，不是上述远�
 
 ## 第一版范围
 
-应用提供概览、用量、线路、设置四页，支持单 Key、三线路、账户/额度/到期、每日费用、模型用量排行和线路状态。Key 可选记住：Android 用 Keystore AES-GCM 加密，Web 使用同源脚本可读的 localStorage；清除会删除本地记录。用量缓存 30 分钟；缺失、失败、限流或过期会明确提示，不把未知数据显示为 0。逐请求日志和能力探测不纳入第一版。
+应用提供概览、用量、线路、设置四页，仅支持账号登录：默认邮箱验证码，保留密码与后续 TOTP。查询官网钱包、套餐、模型排行和北京时间日志统计，记住登录仅保存账号 JWT。Android Keystore AES-GCM 加密、Web localStorage；历史 Key 记录与旧加密别名会单独清理，不影响账号会话。旧 Key 账单客户端和专用测试已删除，只保留不含凭据的线路探测。
 
 ## 账号登录与联调记录
 
-Superba 将已有的 Krill Key 当作 PAT 或 API Key 使用，并未实现 Krill 网页账号登录、OAuth 授权或账号换取 Key；其中“官方登录”指 ChatGPT，并非 Krill。当前监控接口仍需 Bearer Key，不能凭网页登录会话直接替代。[认证方式说明](https://github.com/krill-lab/superba/blob/3ecc0db00f0b536ee070d6cb1c56e01566b3115a/README.zh-CN.md#L33-L36)。这不证明服务端没有其他登录接口，只说明本项目尚无可验证的授权流程。
+Superba 将已有的 Krill Key 当作 PAT 或 API Key 使用，并未实现 Krill 网页账号登录；其中“官方登录”指 ChatGPT。[认证方式说明](https://github.com/krill-lab/superba/blob/3ecc0db00f0b536ee070d6cb1c56e01566b3115a/README.zh-CN.md#L33-L36)。本项目现已独立接入官网邮箱密码与 TOTP 登录；账号接口只使用 JWT，不能用 API Key 替代。
 
 2026-11-08 使用用户授权的 Key 进行只读联调，未将真实 Key 或原始身份信息写入文件：whoami 与最近 7 天 usage/completions 返回 200；subscription（含备用路径）、billing usage、costs 返回 520；三线路 /v1/models 不带 Key 返回 401。用量结果包含请求数、输入/缓存/输出 Token、cost_usd，还出现 input_cache_write_tokens 等扩展字段；api_key_id 未提供有效值，因此仍无法证明按单 Key 隔离。OPTIONS 预检返回 204，允许 GET 与 Authorization；这次验证不保证未来所有线路和来源都同样可用。
+
+## 官网接口排查：费用与订阅提示
+
+用户授权检查已登录的 `https://www.krill-code.com/app/logs` 后，确认官网使用相对该 origin 的 `/api/...` 接口。公开的 [client-CP18vIxS.js](https://www.krill-code.com/assets/client-CP18vIxS.js) 从 `krill_jwt` 读取登录 JWT 并设置 Bearer，同名 cookie 也用于会话；不应复制浏览器登录态到应用配置或仓库。
+
+| 官网请求 | 核心返回字段 | 验证情况 |
+| --- | --- | --- |
+| `GET /api/auth/me` | 用户资料、`credit_balance_usd` | 登录会话返回 200 |
+| `GET /api/subscription` | `subscriptions[]`、`summary`、`credit_balance_usd`、`welfare_balance_usd` | 登录会话 200；仅带 API Key 且不带 cookie 时 401 |
+| `GET /api/credits` | `balance_usd`、`welfare_balance_usd` | 登录会话 200；仅 API Key 时 401 |
+| `POST /api/request-logs/stats` | `total_cost_usd`、请求成功/失败数、输入/输出/缓存/推理 Token、`overall_tps`、`trend` 等 | 登录会话及日期筛选返回 200 |
+| `POST /api/request-logs/model-stats` | `items[].model`、`request_count`、`total_cost_usd`、`total_tokens` | 登录会话与日期筛选返回 200；账号模式排行来源 |
+| `POST /api/request-logs` | `items`、`total`、`page` | 官网日志页已观察到该请求；参数契约来自公开前端 |
+| `GET /api/tokens` | Key 的 ID、前缀、名称等筛选数据 | 仅记录前端契约，未导出账户 Key 列表 |
+
+日志及统计的筛选包括 `start_time`、`end_time`、`model`、`token_id`、`charge_type`、`method`，列表另带 `page`、`page_size`。官网日期组件按 UTC+8 构造不带时区的字符串，例如 `2026-11-08T00:00` 至 `2026-11-08T23:59:59`；App 的组织统计按 UTC 半开区间分桶，两者的“当天”不完全一致。契约见 [api-DGSdnat1.js](https://www.krill-code.com/assets/api-DGSdnat1.js)、[RequestLogsPage-BjsuDGOn.js](https://www.krill-code.com/assets/RequestLogsPage-BjsuDGOn.js)、[DateRangePicker-Ik74vWFD.js](https://www.krill-code.com/assets/DateRangePicker-Ik74vWFD.js)。
+
+官网每份订阅包含 `plan.name`、`plan.billing_type`、起止时间、`quota` 及总额度字段。计费类型可能按日、周、月或请求数；赠金与现金钱包单独计算。字段名 `quota.daily_limit_usd` 在官网也被用于部分周/月窗口，不能仅凭名字推断周期。App 的旧账单“限额减月消费”只是一种推导值，不能替代这些套餐或钱包数据。见 [DashboardPage-B2R9hxwY.js](https://www.krill-code.com/assets/DashboardPage-B2R9hxwY.js)。
+
+三线路复核中，海外和 CDN 的旧订阅接口返回 JSON HTTP 520，带 `Retry-After: 60`；国内线路返回 200、`application/octet-stream`，内容不是可解析的账单 JSON。因此“200”也不意味着支持该接口。响应不足以定位服务端内部的 520 根因，不能断言账户没有套餐或所有线路永久不支持。
+
+客户端修正：订阅失败保留安全的 HTTP/格式原因；成功响应中未提供可选套餐名或到期时间时保留未知，不统一报“不完整”；`access_until=0` 单独表示未设置到期。独立费用接口失败但 `cost_usd` 足够时正常展示汇总费用，以中性说明标注来源并缓存，避免将成功回退误报为整份报告失败。只有真正缺失或截断的数据继续显示警告。
+
+官网公开登录契约包含密码、邮箱验证码、TOTP、Google/GitHub/Linux Do 流程。当前实现默认邮箱验证码、密码和 TOTP，不调用第三方回调或接受条款接口；额外邮箱绑定与安全验证要求提示到官网处理。此前只读调查未导出网页登录 JWT。
+
+## 账号模式实现约定
+
+- `POST /api/auth/login` 发送 `{email,password}`；`data` 为 `{token,user}` 或 `{requires_totp:true,pending_token}`。
+- 二次验证使用 `POST /api/auth/login/totp`，发送 `{pending_token,totp_code}`；动态验证码为 6 位数字。密码仅存在于当前登录表单，请求结束后清空。
+- 邮箱验证码：先 `GET /api/public/auth-settings` 检查 `turnstile_enforced`；强制或无法确认时停止发送并引导官网。公开设置当前为 false，之后可能变化。
+- `POST /api/auth/login/send-code` 只发送 `{email}`；`data.resend_after_seconds` 为服务端重发秒数。缺失或无效时按规范化邮箱在当前客户端保留申请记录，编辑邮箱或重建面板不解除同邮箱保护；可先检查邮箱或到官网重新申请。成功请求不等于确认邮件已经送达。发送使用互斥保护，重复点击不会并发发邮件。
+- `POST /api/auth/login/verify` 发送 `{email,verification_code}`，响应同密码登录，可继续 TOTP。官网输入上限 6 位但未证明必须为 6 位数字，本客户端对去除首尾空白后 1～6 位的验证码提交给服务端校验。邮件码与 TOTP 使用不同字段和接口，均不持久化。
+- 记住登录仅保存 JWT；恢复后先查询 `/api/auth/me`。收到 401 立即移除本应用保存的会话并清空旧账户数据，退出登录也执行本地清除；官网未提供公开 logout 包装，不影响其他客户端会话。
+- 账号读请求使用 Bearer JWT，忽略浏览器 Cookie；每次刷新先验证身份。账号统计缓存 5 分钟，按令牌、范围和北京时间日期隔离；可选接口失败保留已知数据并明确标为缓存或未知。
+- `stats.trend[]` 每桶为 `bucket_start`、`request_count`、`total_cost_usd`、`total_tokens`。实测 `bucket_start` 以 UTC 的 `Z` 时间返回，北京时间零点为前一日 UTC 16 点，因此先转成北京时间再归日，不能截取原始日期。模型排行使用 `model-stats`，不下载所有日志或伪造细分输入/输出 Token；细分 Token 来自统计汇总。
+- `request_count` 与 Credits 套餐保留各自单位，未知计费类型不推算美元额度。
+
+官网账号 API 的 OPTIONS 实测返回 405 且没有跨域允许头，Web 版通过 `tools/account-web.mjs` 同源转发。仅白名单内认证设置、验证码申请与校验、密码/TOTP 登录、身份、钱包、套餐和两个统计接口被允许；固定上游 `https://www.krill-code.com`，不转发 Cookie/Set-Cookie，不跟随重定向、不记录凭据，请求上限 64 KiB、响应上限 2 MiB，15 秒超时。Android 直接连接官网 HTTPS。
+
+当前验证：Android 35 项、Wasm 37 项、Node 代理 8 项测试通过；邮箱验证码、密码、TOTP、会话恢复及退出已用虚拟凭据验证。验证码相关界面还覆盖服务端倒计时、缺失重发时间、编辑邮箱不重复申请和强制人机验证停止发送。真实邮件送达、验证码校验和账号锁定对该入口的影响尚未验证，未自动申请真实验证码。
+
+用户随后授权了一次真实密码登录测试。`POST /api/auth/login` 返回 HTTP 429、`data.type=rate_limit_error`，固定消息为 `account temporarily locked due to too many failed attempts`；没有 `Retry-After` 或解锁时间。此响应尚未验证密码对错或取得会话，未继续重复登录、发送验证码、重置密码或修改账号安全设置。文档不记录账号和密码。
+
+客户端将已确认的锁定响应映射为明确中文提示；普通 429 无时间头时不显示“60 秒后重试”。内部默认 60 秒仅防重复请求，不是服务端解锁承诺；有有效 Retry-After 时标为服务端重试建议。密码、验证码发送和验证码校验分别保留本地冷却，避免客户端将一个入口的限制强加到另一入口；这不代表服务端允许绕过锁定。官网未公开锁定持续时间。
