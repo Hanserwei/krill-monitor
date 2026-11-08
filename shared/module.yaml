@@ -21,6 +21,9 @@ dependencies@android:
   - $compose.uiTooling
   - $libs.ktor.client.okhttp
 
+dependencies@wasmJs:
+  - org.jetbrains.kotlinx:kotlinx-browser:0.5.0
+
 test-dependencies:
   - $libs.ktor.client.mock
   - $libs.kotlinx.coroutines.test

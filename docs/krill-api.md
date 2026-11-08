@@ -1,6 +1,6 @@
 # Krill 中转接口与监控数据来源
 
-本文依据 Superba 上游源码的固定版本 [`3ecc0db00f0b536ee070d6cb1c56e01566b3115a`](https://github.com/krill-lab/superba/tree/3ecc0db00f0b536ee070d6cb1c56e01566b3115a) 整理，是客户端使用方式的记录，不是服务端协议保证。未调用生产 API；浏览器 CORS、各接口当前是否可用、权限和返回值均未验证。
+本文依据 Superba 上游源码的固定版本 [`3ecc0db00f0b536ee070d6cb1c56e01566b3115a`](https://github.com/krill-lab/superba/tree/3ecc0db00f0b536ee070d6cb1c56e01566b3115a) 整理，是客户端使用方式的记录，不是服务端协议保证。末尾记录了实际只读联调结果；权限与统计归属仍需以服务端契约为准。
 
 ## 线路与鉴权
 
@@ -74,4 +74,10 @@ Superba router 的 `/_superba/v1/` 是**本地管理接口**，不是上述远�
 
 ## 第一版范围
 
-第一版目标是单 Key 会话内存、三线路、账户/额度/到期、每日费用、模型用量排行和线路状态。用量数据采用保守的 30 分钟缓存；缺失、失败、限流或过期时应明确显示不可用或过期，不把未知数据显示为 0。这里描述的是范围与数据约定，不代表每项功能已经实现；逐请求日志和能力探测仅作接口背景，不纳入第一版承诺。
+应用提供概览、用量、线路、设置四页，支持单 Key、三线路、账户/额度/到期、每日费用、模型用量排行和线路状态。Key 可选记住：Android 用 Keystore AES-GCM 加密，Web 使用同源脚本可读的 localStorage；清除会删除本地记录。用量缓存 30 分钟；缺失、失败、限流或过期会明确提示，不把未知数据显示为 0。逐请求日志和能力探测不纳入第一版。
+
+## 账号登录与联调记录
+
+Superba 将已有的 Krill Key 当作 PAT 或 API Key 使用，并未实现 Krill 网页账号登录、OAuth 授权或账号换取 Key；其中“官方登录”指 ChatGPT，并非 Krill。当前监控接口仍需 Bearer Key，不能凭网页登录会话直接替代。[认证方式说明](https://github.com/krill-lab/superba/blob/3ecc0db00f0b536ee070d6cb1c56e01566b3115a/README.zh-CN.md#L33-L36)。这不证明服务端没有其他登录接口，只说明本项目尚无可验证的授权流程。
+
+2026-11-08 使用用户授权的 Key 进行只读联调，未将真实 Key 或原始身份信息写入文件：whoami 与最近 7 天 usage/completions 返回 200；subscription（含备用路径）、billing usage、costs 返回 520；三线路 /v1/models 不带 Key 返回 401。用量结果包含请求数、输入/缓存/输出 Token、cost_usd，还出现 input_cache_write_tokens 等扩展字段；api_key_id 未提供有效值，因此仍无法证明按单 Key 隔离。OPTIONS 预检返回 204，允许 GET 与 Authorization；这次验证不保证未来所有线路和来源都同样可用。

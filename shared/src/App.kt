@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -13,6 +15,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathBuilder
+import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -32,6 +40,137 @@ import org.jetbrains.compose.resources.Font
 
 private data class Connection(val key: String, val line: RelayLine)
 
+private fun navIcon(name: String, draw: PathBuilder.() -> Unit) =
+    ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
+        .apply {
+            path(
+                fill = SolidColor(Color.Black),
+                pathFillType = PathFillType.EvenOdd,
+                pathBuilder = draw,
+            )
+        }
+        .build()
+
+private enum class Page(val label: String, val icon: ImageVector) {
+    Overview(
+        "概览",
+        navIcon("Dashboard") {
+            moveTo(3f, 3f)
+            lineTo(11f, 3f)
+            lineTo(11f, 11f)
+            lineTo(3f, 11f)
+            close()
+            moveTo(13f, 3f)
+            lineTo(21f, 3f)
+            lineTo(21f, 8f)
+            lineTo(13f, 8f)
+            close()
+            moveTo(13f, 10f)
+            lineTo(21f, 10f)
+            lineTo(21f, 21f)
+            lineTo(13f, 21f)
+            close()
+            moveTo(3f, 13f)
+            lineTo(11f, 13f)
+            lineTo(11f, 21f)
+            lineTo(3f, 21f)
+            close()
+        },
+    ),
+    Usage(
+        "用量",
+        navIcon("BarChart") {
+            moveTo(3f, 13f)
+            lineTo(7f, 13f)
+            lineTo(7f, 21f)
+            lineTo(3f, 21f)
+            close()
+            moveTo(10f, 3f)
+            lineTo(14f, 3f)
+            lineTo(14f, 21f)
+            lineTo(10f, 21f)
+            close()
+            moveTo(17f, 8f)
+            lineTo(21f, 8f)
+            lineTo(21f, 21f)
+            lineTo(17f, 21f)
+            close()
+        },
+    ),
+    Lines(
+        "线路",
+        navIcon("AccountTree") {
+            moveTo(3f, 3f)
+            lineTo(10f, 3f)
+            lineTo(10f, 10f)
+            lineTo(8f, 10f)
+            lineTo(8f, 12f)
+            lineTo(15f, 12f)
+            lineTo(15f, 7f)
+            lineTo(21f, 7f)
+            lineTo(21f, 13f)
+            lineTo(15f, 13f)
+            lineTo(15f, 14f)
+            lineTo(8f, 14f)
+            lineTo(8f, 17f)
+            lineTo(15f, 17f)
+            lineTo(15f, 15f)
+            lineTo(21f, 15f)
+            lineTo(21f, 21f)
+            lineTo(15f, 21f)
+            lineTo(15f, 19f)
+            lineTo(6f, 19f)
+            lineTo(6f, 10f)
+            lineTo(3f, 10f)
+            close()
+        },
+    ),
+    Settings(
+        "设置",
+        navIcon("Settings") {
+            moveTo(10f, 2f)
+            lineTo(14f, 2f)
+            lineTo(14.6f, 4.5f)
+            lineTo(16.3f, 5.2f)
+            lineTo(18.5f, 3.8f)
+            lineTo(21.2f, 6.5f)
+            lineTo(19.8f, 8.7f)
+            lineTo(20.5f, 10.4f)
+            lineTo(23f, 11f)
+            lineTo(23f, 14f)
+            lineTo(20.5f, 14.6f)
+            lineTo(19.8f, 16.3f)
+            lineTo(21.2f, 18.5f)
+            lineTo(18.5f, 21.2f)
+            lineTo(16.3f, 19.8f)
+            lineTo(14.6f, 20.5f)
+            lineTo(14f, 23f)
+            lineTo(10f, 23f)
+            lineTo(9.4f, 20.5f)
+            lineTo(7.7f, 19.8f)
+            lineTo(5.5f, 21.2f)
+            lineTo(2.8f, 18.5f)
+            lineTo(4.2f, 16.3f)
+            lineTo(3.5f, 14.6f)
+            lineTo(1f, 14f)
+            lineTo(1f, 11f)
+            lineTo(3.5f, 10.4f)
+            lineTo(4.2f, 8.7f)
+            lineTo(2.8f, 6.5f)
+            lineTo(5.5f, 3.8f)
+            lineTo(7.7f, 5.2f)
+            lineTo(9.4f, 4.5f)
+            close()
+            moveTo(12f, 8f)
+            curveTo(14.5f, 8f, 16.5f, 10f, 16.5f, 12.5f)
+            curveTo(16.5f, 15f, 14.5f, 17f, 12f, 17f)
+            curveTo(9.5f, 17f, 7.5f, 15f, 7.5f, 12.5f)
+            curveTo(7.5f, 10f, 9.5f, 8f, 12f, 8f)
+            close()
+        },
+    ),
+}
+
 @Composable
 @Preview
 @DevelopmentEntryPoint
@@ -47,19 +186,52 @@ fun App() {
             )
     MaterialTheme(colorScheme = colors, typography = Typography(fontFamily = fontFamily)) {
         var key by remember { mutableStateOf("") }
+        val keyStore = remember { createMonitorKeyStore() }
+        var rememberKey by remember { mutableStateOf(false) }
+        var storageMessage by remember { mutableStateOf<String?>(null) }
+        var storageLoaded by remember { mutableStateOf(false) }
         var selectedLine by remember { mutableStateOf(RelayLine.Overseas) }
         var connection by remember { mutableStateOf<Connection?>(null) }
         var days by remember { mutableIntStateOf(7) }
         var revision by remember { mutableIntStateOf(0) }
-        // Key 只活在当前会话；换 Key 时销毁客户端及其缓存，避免串用账户数据。
+        var page by remember { mutableStateOf(Page.Settings) }
+        // 滚动状态和查询状态都放在页面外，切换页面不会重置位置或触发请求。
+        val scrollStates =
+            listOf(
+                rememberLazyListState(),
+                rememberLazyListState(),
+                rememberLazyListState(),
+                rememberLazyListState(),
+            )
+        // 换 Key 时销毁客户端及其缓存，避免串用账户数据。
         val client = remember(connection?.key) { connection?.let { MonitorClient() } }
         var snapshot by remember(connection, days) { mutableStateOf<DashboardSnapshot?>(null) }
         var loading by remember(connection, days) { mutableStateOf(false) }
         var error by remember(connection, days) { mutableStateOf<String?>(null) }
 
         DisposableEffect(client) { onDispose { client?.close() } }
+        LaunchedEffect(keyStore) {
+            try {
+                keyStore
+                    .load()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { saved ->
+                        key = saved
+                        rememberKey = true
+                        connection = Connection(saved, RelayLine.Overseas)
+                        page = Page.Overview
+                    }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                storageMessage = "读取已保存的 Key 失败，请重新输入。"
+            } finally {
+                storageLoaded = true
+            }
+        }
         // 配置变化会取消旧查询，避免迟到的结果覆盖新 Key 或日期范围。
-        LaunchedEffect(connection, days, revision) {
+        LaunchedEffect(storageLoaded, connection, days, revision) {
+            if (!storageLoaded) return@LaunchedEffect
             val active = connection ?: return@LaunchedEffect
             val api = client ?: return@LaunchedEffect
             loading = true
@@ -79,152 +251,255 @@ fun App() {
             }
         }
 
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Box(
-                Modifier.fillMaxSize().safeContentPadding(),
-                contentAlignment = Alignment.TopCenter,
-            ) {
-                LazyColumn(
-                    modifier = Modifier.widthIn(max = 1120.dp).fillMaxSize(),
-                    contentPadding = PaddingValues(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    item {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(
-                                "Krill Monitor",
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Text("中转账户与线路监控", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val wide = maxWidth >= 840.dp
+            Scaffold(
+                modifier = Modifier.fillMaxSize().imePadding(),
+                contentWindowInsets = WindowInsets.safeDrawing,
+                bottomBar = {
+                    if (!wide) {
+                        NavigationBar {
+                            Page.entries.forEach { destination ->
+                                NavigationBarItem(
+                                    selected = page == destination,
+                                    onClick = { page = destination },
+                                    icon = { Icon(destination.icon, contentDescription = null) },
+                                    label = { Text(destination.label) },
+                                )
+                            }
                         }
                     }
-                    item {
-                        ConnectionPanel(
-                            key = key,
-                            onKeyChange = { key = it },
-                            line = selectedLine,
-                            onLineChange = { selectedLine = it },
-                            connected = connection != null,
-                            onConnect = {
-                                val next = Connection(key.trim(), selectedLine)
-                                if (connection == next) revision++ else connection = next
-                            },
-                            onClear = {
-                                key = ""
-                                connection = null
-                                error = null
-                            },
-                        )
+                },
+            ) { padding ->
+                Row(Modifier.fillMaxSize().padding(padding)) {
+                    if (wide) {
+                        NavigationRail(windowInsets = WindowInsets(0, 0, 0, 0)) {
+                            Page.entries.forEach { destination ->
+                                NavigationRailItem(
+                                    selected = page == destination,
+                                    onClick = { page = destination },
+                                    icon = { Icon(destination.icon, contentDescription = null) },
+                                    label = { Text(destination.label) },
+                                )
+                            }
+                        }
                     }
-                    if (connection != null) {
-                        item {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Column(Modifier.weight(1f)) {
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Row(
+                            Modifier.widthIn(max = 1120.dp)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Krill Monitor · ${page.label}",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                connection?.let { active ->
                                     Text(
-                                        "${connection!!.line.label} · Key 尾号 ${connection!!.key.takeLast(4)}",
-                                        fontWeight = FontWeight.Medium,
-                                    )
-                                    Text(
-                                        snapshot?.let { "查询于 ${utcTimeText(it.updatedAt)}" }
-                                            ?: "等候查询结果",
+                                        "${active.line.label} · Key 尾号 ${active.key.takeLast(4)}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
+                            }
+                            if (connection != null) {
                                 OutlinedButton(onClick = { revision++ }, enabled = !loading) {
                                     Text("刷新")
                                 }
                             }
                         }
-                        item {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text(
-                                    "用量统计",
-                                    Modifier.weight(1f),
-                                    style = MaterialTheme.typography.titleLarge,
-                                )
-                                listOf(7, 30).forEach { value ->
-                                    FilterChip(
-                                        selected = days == value,
-                                        onClick = { days = value },
-                                        label = { Text("${value}天") },
+                        LazyColumn(
+                            state = scrollStates[page.ordinal],
+                            modifier = Modifier.widthIn(max = 1120.dp).fillMaxSize(),
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            if (page == Page.Settings) {
+                                item {
+                                    ConnectionPanel(
+                                        key = key,
+                                        onKeyChange = { key = it },
+                                        line = selectedLine,
+                                        onLineChange = { selectedLine = it },
+                                        rememberKey = rememberKey,
+                                        onRememberKeyChange = { rememberKey = it },
+                                        storageSecure = keyStore.isSecure,
+                                        connected = connection != null,
+                                        onConnect = {
+                                            val saved = runCatching {
+                                                if (rememberKey) keyStore.save(key.trim())
+                                                else keyStore.clear()
+                                            }
+                                                .getOrDefault(false)
+                                            storageMessage =
+                                                if (saved) null else "Key 本地存储操作失败，请检查设置。"
+                                            val next = Connection(key.trim(), selectedLine)
+                                            if (connection == next) revision++
+                                            else connection = next
+                                            page = Page.Overview
+                                        },
+                                        onClear = {
+                                            val cleared = runCatching {
+                                                keyStore.clear()
+                                            }
+                                                .getOrDefault(false)
+                                            storageMessage =
+                                                if (cleared) null else "清除本地保存的 Key 失败，请重试。"
+                                            rememberKey = false
+                                            key = ""
+                                            connection = null
+                                            error = null
+                                            page = Page.Settings
+                                        },
                                     )
+                                }
+                                storageMessage?.let { message ->
+                                    item { Notice(message, error = true) }
+                                }
+                                item {
+                                    Panel("隐私与统计口径") {
+                                        Text(
+                                            if (keyStore.isSecure)
+                                                "可选择在 Android 加密保存 Key；关闭保存或清除 Key 会删除本地记录。线路探测不发送 Key。"
+                                            else
+                                                "可选择在浏览器本地存储 Key，同源脚本可以读取；关闭保存或清除 Key 会删除本地记录。线路探测不发送 Key。"
+                                        )
+                                        Text("统计归属由服务端决定，可能是账户汇总，不能确认是单个 Key 的独立用量。")
+                                        Text("金额单位 USD，未知数据以 — 表示；日期按 UTC。")
+                                    }
+                                }
+                            } else {
+                                storageMessage?.let { message ->
+                                    item { Notice(message, error = true) }
+                                }
+                                if (page == Page.Usage) {
+                                    item {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            Text(
+                                                "用量统计",
+                                                Modifier.weight(1f),
+                                                style = MaterialTheme.typography.titleLarge,
+                                            )
+                                            listOf(7, 30).forEach { value ->
+                                                FilterChip(
+                                                    selected = days == value,
+                                                    onClick = { days = value },
+                                                    label = { Text("${value}天") },
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                if (connection == null) {
+                                    item {
+                                        Panel("开始监控") {
+                                            Text("配置中转 Key 和查询线路后，即可查看${page.label}。")
+                                            Button(onClick = { page = Page.Settings }) {
+                                                Text("前往设置")
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    if (loading) {
+                                        item {
+                                            Column(
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                LinearProgressIndicator(Modifier.fillMaxWidth())
+                                                Text(
+                                                    if (snapshot == null) "正在查询账户、用量与线路…"
+                                                    else "正在刷新，当前显示上次查询结果…",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                )
+                                            }
+                                        }
+                                    }
+                                    error?.let { message -> item { Notice(message, error = true) } }
+                                    snapshot?.let { data ->
+                                        when (page) {
+                                            Page.Overview -> {
+                                                item { Overview(data, days) }
+                                                item { AccountPanel(data.account, data.updatedAt) }
+                                                if (
+                                                    data.usage == null ||
+                                                        data.warnings.isNotEmpty() ||
+                                                        data.usage.warnings.isNotEmpty()
+                                                ) {
+                                                    item {
+                                                        Notice("用量数据可能不完整，请在用量页查看详情。", error = true)
+                                                    }
+                                                }
+                                                item {
+                                                    Text(
+                                                        "查询于 ${utcTimeText(data.updatedAt)}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                    )
+                                                }
+                                            }
+                                            Page.Usage -> {
+                                                item {
+                                                    Text(
+                                                        "统计可能包含账户其他 Key 的用量。",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                    )
+                                                }
+                                                data.warnings.distinct().forEach { message ->
+                                                    item { Notice(message, error = true) }
+                                                }
+                                                val usage = data.usage
+                                                if (usage == null) {
+                                                    item { Notice("用量数据暂不可用；接口不支持或查询失败时不会按零用量展示。") }
+                                                } else {
+                                                    item {
+                                                        Column(
+                                                            verticalArrangement =
+                                                                Arrangement.spacedBy(8.dp)
+                                                        ) {
+                                                            Text(
+                                                                "${if (usage.stale) "过期缓存" else if (usage.fromCache) "缓存结果" else "最新结果"} · ${utcTimeText(usage.fetchedAt)} · 日期按 UTC",
+                                                                style =
+                                                                    MaterialTheme.typography
+                                                                        .bodySmall,
+                                                                color =
+                                                                    if (usage.stale)
+                                                                        MaterialTheme.colorScheme
+                                                                            .error
+                                                                    else
+                                                                        MaterialTheme.colorScheme
+                                                                            .onSurfaceVariant,
+                                                            )
+                                                            Text(
+                                                                "用量缓存 30 分钟；刷新账户与线路时会复用缓存。",
+                                                                style =
+                                                                    MaterialTheme.typography
+                                                                        .bodySmall,
+                                                            )
+                                                            usage.warnings.distinct().forEach {
+                                                                Notice(it, error = true)
+                                                            }
+                                                        }
+                                                    }
+                                                    item { DailyPanel(usage.daily) }
+                                                    item { ModelPanel(usage.models) }
+                                                }
+                                            }
+                                            Page.Lines -> item { LinesPanel(data.lines) }
+                                            Page.Settings -> Unit
+                                        }
+                                    }
                                 }
                             }
                         }
-                        if (loading)
-                            item {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                                    Text(
-                                        if (snapshot == null) "正在查询账户、用量与线路…"
-                                        else "正在刷新，当前显示上次查询结果…",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                    }
-                    error?.let { message -> item { Notice(message, error = true) } }
-                    val data = snapshot
-                    if (data != null) {
-                        item {
-                            Notice("统计归属由服务端决定，可能是账户汇总；当前不能确认是单个 Key 的独立用量。")
-                        }
-                        data.warnings.distinct().forEach { message ->
-                            item { Notice(message, error = true) }
-                        }
-                        item { Overview(data, days) }
-                        item { AccountPanel(data.account, data.updatedAt) }
-                        val usage = data.usage
-                        if (usage == null) item { Notice("用量数据暂不可用。接口不支持或查询失败时，不会按零用量展示。") }
-                        else {
-                            item {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(
-                                        "${if (usage.stale) "过期缓存" else if (usage.fromCache) "缓存结果" else "最新结果"} · ${utcTimeText(usage.fetchedAt)} · 日期按 UTC",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color =
-                                            if (usage.stale) MaterialTheme.colorScheme.error
-                                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Text(
-                                        "用量缓存 30 分钟；刷新账户与线路时会复用缓存。",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    usage.warnings.distinct().forEach { Notice(it, error = true) }
-                                }
-                            }
-                            item { DailyPanel(usage.daily) }
-                            item { ModelPanel(usage.models) }
-                        }
-                        item { LinesPanel(data.lines) }
-                    } else if (!loading && error == null)
-                        item {
-                            Panel("开始监控") {
-                                Text("输入中转 Key，选择查询线路，然后开始监控。")
-                                Text(
-                                    "这里会展示账户额度、每日费用、模型用量和三条线路的状态。",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    "Key 仅保留在当前会话，关闭或清除后需要重新输入。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                    item {
-                        Text(
-                            "金额单位 USD · 未知数据以 — 表示 · 线路探测不发送 Key",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
             }
@@ -238,6 +513,9 @@ private fun ConnectionPanel(
     onKeyChange: (String) -> Unit,
     line: RelayLine,
     onLineChange: (RelayLine) -> Unit,
+    rememberKey: Boolean,
+    onRememberKeyChange: (Boolean) -> Unit,
+    storageSecure: Boolean,
     connected: Boolean,
     onConnect: () -> Unit,
     onClear: () -> Unit,
@@ -253,7 +531,7 @@ private fun ConnectionPanel(
             label = { Text("中转 API Key") },
             singleLine = true,
             isError = invalid,
-            supportingText = { Text(if (invalid) "Key 不能包含空白或控制字符。" else "仅保留在当前会话，不写入本地存储。") },
+            supportingText = { Text(if (invalid) "Key 不能包含空白或控制字符。" else "Key 不会写入日志或 URL。") },
             visualTransformation =
                 if (visible) VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = {
@@ -263,6 +541,24 @@ private fun ConnectionPanel(
                 KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(onGo = { if (canConnect) onConnect() }),
         )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier =
+                Modifier.fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .toggleable(
+                        value = rememberKey,
+                        role = Role.Checkbox,
+                        onValueChange = onRememberKeyChange,
+                    ),
+        ) {
+            Checkbox(checked = rememberKey, onCheckedChange = null)
+            Text(
+                if (storageSecure) "在设备上加密保存 Key" else "在浏览器本地保存 Key（同源脚本可读取）",
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Text("应用配置时生效；关闭保存会删除已保存的 Key。", style = MaterialTheme.typography.bodySmall)
         Text("查询线路", style = MaterialTheme.typography.labelLarge)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             RelayLine.entries.forEach { option ->
@@ -286,15 +582,14 @@ private fun ConnectionPanel(
             ) {
                 Text(if (connected) "应用配置" else "开始监控")
             }
-            if (key.isNotEmpty() || connected)
-                TextButton(
-                    onClick = {
-                        visible = false
-                        onClear()
-                    }
-                ) {
-                    Text("清除 Key")
+            TextButton(
+                onClick = {
+                    visible = false
+                    onClear()
                 }
+            ) {
+                Text("清除 Key")
+            }
         }
     }
 }
