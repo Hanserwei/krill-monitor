@@ -19,7 +19,7 @@ import kotlinx.serialization.json.*
 
 internal expect fun configureAccountRequest(request: HttpRequestBuilder)
 
-/** 官网账号 JWT 与中转 Key 不互通；只向固定账号服务发送登录和只读请求。 */
+/** 官网账号 JWT 与中转 Key 不互通；账号请求只发送到固定账号服务。 */
 class AccountClient(
     private val http: HttpClient = defaultMonitorHttpClient(),
     private val baseUrl: String = "https://www.krill-code.com",
@@ -31,6 +31,7 @@ class AccountClient(
     private var cached: AccountDashboard? = null
     private val retries = mutableMapOf<String, Pair<Instant, String>>()
     private val codeSendLock = Mutex()
+    private val keySecretLock = Mutex()
     // 间隔未知时按邮箱保留本会话申请记录，编辑邮箱或切页不能解除保护。
     private val unknownCodeResends = mutableSetOf<String>()
 
@@ -206,6 +207,128 @@ class AccountClient(
         }
     }
 
+    suspend fun listApiKeys(session: AccountSession): ManagedKeyList {
+        checkKeySession(session)
+        val user = request("/api/auth/me", session.token)
+        validateUser(user)
+        val accountId = user.count("id")!!
+        val data = requestElement("/api/tokens", session.token)
+        val items = data as? JsonArray ?: throw AccountAccessException("账号接口响应格式无效")
+        return ManagedKeyList(accountId, items.map { parseManagedKey(it) })
+    }
+
+    suspend fun createApiKey(session: AccountSession, name: String): ApiKeySecret {
+        checkKeySession(session)
+        return secretMutation {
+            parseKeySecret(
+                requestElement(
+                    "/api/tokens",
+                    session.token,
+                    keyName(name),
+                    HttpMethod.Post,
+                    uncertain = true,
+                )
+            )
+        }
+    }
+
+    suspend fun renameApiKey(session: AccountSession, id: Long, name: String): ManagedApiKey {
+        checkKeySession(session)
+        checkKeyId(id)
+        val item =
+            parseManagedKey(
+                requestElement("/api/tokens/$id", session.token, keyName(name), HttpMethod.Put)
+            )
+        if (item.id != id) throw AccountAccessException("账号接口响应格式无效")
+        return item
+    }
+
+    suspend fun rotateApiKey(session: AccountSession, id: Long): ApiKeySecret {
+        checkKeySession(session)
+        checkKeyId(id)
+        return secretMutation {
+            parseKeySecret(
+                requestElement(
+                    "/api/tokens/$id/rotate",
+                    session.token,
+                    method = HttpMethod.Post,
+                    uncertain = true,
+                ),
+                id,
+            )
+        }
+    }
+
+    suspend fun revokeApiKey(session: AccountSession, id: Long) {
+        checkKeySession(session)
+        checkKeyId(id)
+        requestElement(
+            "/api/tokens/$id",
+            session.token,
+            method = HttpMethod.Delete,
+            allowEmpty = true,
+        )
+    }
+
+    suspend fun destroyApiKey(session: AccountSession, id: Long) {
+        checkKeySession(session)
+        checkKeyId(id)
+        requestElement(
+            "/api/tokens/$id/destroy",
+            session.token,
+            method = HttpMethod.Delete,
+            allowEmpty = true,
+        )
+    }
+
+    private fun checkKeySession(session: AccountSession) {
+        if (!safeCredential(session.token)) throw AccountSessionExpired()
+    }
+
+    private fun checkKeyId(id: Long) {
+        if (id <= 0) throw AccountAccessException("Key 标识无效")
+    }
+
+    private fun keyName(name: String): JsonObject = buildJsonObject {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) put("name", JsonNull) else put("name", trimmed)
+    }
+
+    private suspend fun secretMutation(action: suspend () -> ApiKeySecret): ApiKeySecret {
+        if (!keySecretLock.tryLock()) throw AccountAccessException("Key 操作进行中，请稍候")
+        try {
+            return action()
+        } finally {
+            keySecretLock.unlock()
+        }
+    }
+
+    private fun parseKeySecret(data: JsonElement, expectedId: Long? = null): ApiKeySecret {
+        try {
+            val obj = data as? JsonObject ?: throw AccountAccessException("响应无效")
+            val item = parseManagedKey(obj["item"] ?: JsonNull)
+            val secret =
+                obj.text("token")?.takeIf(::safeCredential) ?: throw AccountAccessException("响应无效")
+            if (expectedId != null && item.id != expectedId) throw AccountAccessException("响应无效")
+            return ApiKeySecret(item, secret)
+        } catch (_: AccountAccessException) {
+            throw AccountAccessException("Key 操作可能已生效，但无法确认新 Key；请先刷新列表，勿重复创建或轮换")
+        }
+    }
+
+    private fun parseManagedKey(value: JsonElement): ManagedApiKey {
+        val obj = value as? JsonObject ?: throw AccountAccessException("账号接口响应格式无效")
+        val id = obj.count("id")?.takeIf { it > 0 } ?: throw AccountAccessException("账号接口响应格式无效")
+        return ManagedApiKey(
+            id = id,
+            name = obj.text("name"),
+            prefix = obj.text("token_prefix")?.take(16),
+            createdAt = obj.instant("created_at"),
+            lastUsedAt = obj.instant("last_used_at"),
+            revoked = obj["revoked_at"]?.let { it != JsonNull } ?: false,
+        )
+    }
+
     fun close() {
         clearCache()
         retries.clear()
@@ -259,7 +382,19 @@ class AccountClient(
         path: String,
         token: String? = null,
         body: JsonObject? = null,
-    ): JsonObject {
+    ): JsonObject =
+        requestElement(path, token, body) as? JsonObject
+            ?: throw AccountAccessException("账号接口响应格式无效")
+
+    private suspend fun requestElement(
+        path: String,
+        token: String? = null,
+        body: JsonObject? = null,
+        method: HttpMethod = if (body == null) HttpMethod.Get else HttpMethod.Post,
+        allowEmpty: Boolean = false,
+        uncertain: Boolean = false,
+    ): JsonElement {
+        var definiteFailure = false
         val retryKey = if (token == null) path else "account"
         retries[retryKey]
             ?.takeIf { it.first > now() }
@@ -267,7 +402,7 @@ class AccountClient(
         try {
             return http
                 .prepareRequest(baseUrl.trimEnd('/') + path) {
-                    method = if (body == null) HttpMethod.Get else HttpMethod.Post
+                    this.method = method
                     configureAccountRequest(this)
                     header("Accept", "application/json")
                     header("X-Language", "zh-CN")
@@ -291,6 +426,7 @@ class AccountClient(
                     }
                     val buffer = response.bodyAsChannel().readBuffer(2 * 1024 * 1024 + 1)
                     if (buffer.size > 2 * 1024 * 1024) throw AccountAccessException("账号接口响应过大")
+                    val bufferWasEmpty = buffer.size == 0L
                     val root =
                         try {
                             Json.parseToJsonElement(buffer.readString()) as? JsonObject
@@ -298,6 +434,7 @@ class AccountClient(
                             null
                         }
                     if (status == 429) {
+                        definiteFailure = true
                         val headerWait =
                             response.headers["Retry-After"]?.toLongOrNull()?.takeIf { it >= 0 }
                         val message =
@@ -335,6 +472,7 @@ class AccountClient(
                         throw AccountAccessException(retryMessage)
                     }
                     if (status == 403) {
+                        definiteFailure = true
                         val type =
                             (root?.get("data") as? JsonObject)?.text("type")
                                 ?: (root?.get("error") as? JsonObject)?.text("type")
@@ -346,19 +484,25 @@ class AccountClient(
                     if (path == "/api/auth/login/verify" && status in listOf(400, 422))
                         throw AccountAccessException("邮箱验证码校验未通过，请检查邮箱和验证码，或重新获取")
                     if (status !in 200..299) throw AccountAccessException("账号接口暂不可用（HTTP $status）")
+                    if (allowEmpty && root == null && bufferWasEmpty) return@execute JsonNull
                     if ((root?.get("success") as? JsonPrimitive)?.booleanOrNull != true)
                         throw AccountAccessException("账号请求未成功，请检查输入或到官网确认账户状态")
                     if (path == "/api/auth/login/send-code")
                         return@execute root["data"] as? JsonObject ?: JsonObject(emptyMap())
-                    root["data"] as? JsonObject ?: throw AccountAccessException("账号接口响应格式无效")
+                    root["data"]?.takeIf { allowEmpty || it != JsonNull }
+                        ?: if (allowEmpty) JsonNull else throw AccountAccessException("账号接口响应格式无效")
                 }
         } catch (e: CancellationException) {
             throw e
         } catch (e: AccountSessionExpired) {
+            if (token != null) clearCache()
             throw e
         } catch (e: AccountAccessException) {
+            if (uncertain && !definiteFailure)
+                throw AccountAccessException("Key 操作可能已生效，但无法确认新 Key；请先刷新列表，勿重复创建或轮换")
             throw e
         } catch (_: Throwable) {
+            if (uncertain) throw AccountAccessException("Key 操作可能已生效，但无法确认新 Key；请先刷新列表，勿重复创建或轮换")
             throw AccountAccessException("无法连接账号服务，请检查网络；Web 版请使用同源账号服务启动命令")
         }
     }

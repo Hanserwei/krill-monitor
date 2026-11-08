@@ -93,6 +93,30 @@ private enum class Page(val label: String, val icon: ImageVector) {
             close()
         },
     ),
+    Keys(
+        "密钥",
+        navIcon("Key") {
+            moveTo(7f, 4f)
+            curveTo(4.24f, 4f, 2f, 6.24f, 2f, 9f)
+            curveTo(2f, 11.76f, 4.24f, 14f, 7f, 14f)
+            curveTo(9.05f, 14f, 10.81f, 12.76f, 11.58f, 11f)
+            lineTo(16f, 11f)
+            lineTo(16f, 14f)
+            lineTo(20f, 14f)
+            lineTo(20f, 11f)
+            lineTo(22f, 11f)
+            lineTo(22f, 7f)
+            lineTo(11.58f, 7f)
+            curveTo(10.81f, 5.24f, 9.05f, 4f, 7f, 4f)
+            close()
+            moveTo(7f, 7f)
+            curveTo(8.1f, 7f, 9f, 7.9f, 9f, 9f)
+            curveTo(9f, 10.1f, 8.1f, 11f, 7f, 11f)
+            curveTo(5.9f, 11f, 5f, 10.1f, 5f, 9f)
+            curveTo(5f, 7.9f, 5.9f, 7f, 7f, 7f)
+            close()
+        },
+    ),
     Lines(
         "线路",
         navIcon("AccountTree") {
@@ -190,9 +214,33 @@ fun App() {
                 rememberLazyListState(),
                 rememberLazyListState(),
                 rememberLazyListState(),
+                rememberLazyListState(),
             )
         val accountApi = remember(session?.token) { AccountClient(baseUrl = accountApiBaseUrl()) }
         DisposableEffect(accountApi) { onDispose { accountApi.close() } }
+        fun expireSession(active: AccountSession) {
+            if (session !== active) return
+            val cleared = runCatching { sessionStore.clear() }.getOrDefault(false)
+            session = null
+            page = Page.Settings
+            storageMessage = if (cleared) "登录已过期，请重新登录。" else "登录已过期；本地会话删除失败，请重试退出。"
+            toast(storageMessage ?: "登录已过期，请重新登录。")
+        }
+        val keyVault = rememberLocalKeyVault()
+        val keyScope = rememberCoroutineScope()
+        val keyManager =
+            remember(accountApi, session, keyVault) {
+                session?.let { active ->
+                    KeyManagementState(accountApi, active, keyVault, keyScope, toast) {
+                        expireSession(active)
+                    }
+                }
+            }
+        val destinations = Page.entries.filter { it != Page.Keys || keyVault.enabled }
+        DisposableEffect(keyManager) { onDispose { keyManager?.dispose() } }
+        LaunchedEffect(page, keyManager) {
+            if (page == Page.Keys) keyManager?.load() else keyManager?.leavePage()
+        }
         val lineProber = remember { LineProber() }
         DisposableEffect(lineProber) { onDispose { lineProber.close() } }
         var accountData by remember(session, days) { mutableStateOf<AccountDashboard?>(null) }
@@ -242,11 +290,7 @@ fun App() {
             } catch (e: CancellationException) {
                 throw e
             } catch (_: AccountSessionExpired) {
-                val cleared = runCatching { sessionStore.clear() }.getOrDefault(false)
-                session = null
-                page = Page.Settings
-                storageMessage = if (cleared) "登录已过期，请重新登录。" else "登录已过期；本地会话删除失败，请重试退出。"
-                toast(storageMessage ?: "登录已过期，请重新登录。")
+                expireSession(active)
             } catch (e: AccountAccessException) {
                 accountData = null
                 error = e.message
@@ -269,7 +313,7 @@ fun App() {
                             containerColor = MaterialTheme.colorScheme.surface,
                             tonalElevation = 0.dp,
                         ) {
-                            Page.entries.forEach { destination ->
+                            destinations.forEach { destination ->
                                 NavigationBarItem(
                                     selected = page == destination,
                                     onClick = { page = destination },
@@ -287,7 +331,7 @@ fun App() {
                             windowInsets = WindowInsets(0, 0, 0, 0),
                             containerColor = MaterialTheme.colorScheme.background,
                         ) {
-                            Page.entries.forEach { destination ->
+                            destinations.forEach { destination ->
                                 NavigationRailItem(
                                     selected = page == destination,
                                     onClick = { page = destination },
@@ -324,11 +368,16 @@ fun App() {
                             if (session != null) {
                                 FilledTonalButton(
                                     onClick = {
-                                        forceRefresh = true
-                                        revision++
-                                        toast("正在刷新监控数据")
+                                        if (page == Page.Keys) keyManager?.load(force = true)
+                                        else {
+                                            forceRefresh = true
+                                            revision++
+                                            toast("正在刷新监控数据")
+                                        }
                                     },
-                                    enabled = !loading,
+                                    enabled =
+                                        if (page == Page.Keys) keyManager?.busy == false
+                                        else !loading,
                                     contentPadding =
                                         PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                                 ) {
@@ -361,15 +410,26 @@ fun App() {
                                             page = Page.Overview
                                             if (!stored) toast("会话未能保存，下次需要重新登录")
                                         },
-                                        onLogout = {
-                                            val cleared = runCatching {
-                                                sessionStore.clear()
-                                            }
-                                                .getOrDefault(false)
-                                            session = null
-                                            storageMessage = if (cleared) null else "账号会话清除失败，请重试。"
-                                            toast(if (cleared) "已退出本应用账号" else "本地登录清除失败，请重试")
-                                        },
+                                        onLogout = logout@{
+                                                if (keyManager?.pendingSave != null) {
+                                                    page = Page.Keys
+                                                    toast("新 Key 尚未保存，请先重试加密保存后退出")
+                                                    return@logout
+                                                }
+                                                if (keyManager?.busy == true) {
+                                                    page = Page.Keys
+                                                    toast("密钥操作尚未完成，请先完成或取消后退出")
+                                                    return@logout
+                                                }
+                                                val cleared = runCatching {
+                                                    sessionStore.clear()
+                                                }
+                                                    .getOrDefault(false)
+                                                session = null
+                                                storageMessage =
+                                                    if (cleared) null else "账号会话清除失败，请重试。"
+                                                toast(if (cleared) "已退出本应用账号" else "本地登录清除失败，请重试")
+                                            },
                                     )
                                 }
                                 storageMessage?.let { message ->
@@ -386,6 +446,8 @@ fun App() {
                                         Text("金额单位 USD，未知数据以 — 表示；日期按北京时间 UTC+8。")
                                     }
                                 }
+                            } else if (page == Page.Keys && keyManager != null) {
+                                item { KeyManagementPanel(keyManager) }
                             } else {
                                 storageMessage?.let { message ->
                                     item { Notice(message, error = true) }
@@ -525,11 +587,17 @@ fun App() {
                                             else if (!loading && error == null)
                                                 item { Notice("线路数据暂不可用。") }
                                         }
+                                        Page.Keys,
                                         Page.Settings -> Unit
                                     }
                                 }
                             }
                         }
+                        if (page == Page.Keys)
+                            keyManager?.let {
+                                ProtectKeyDisplay(onBackground = it::leavePage)
+                                KeyManagementDialogs(it)
+                            }
                     }
                 }
             }

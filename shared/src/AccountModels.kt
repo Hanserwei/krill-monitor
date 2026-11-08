@@ -5,6 +5,19 @@ import kotlin.time.Instant
 // 普通 class 避免默认 toString 把令牌带入调试输出。
 class AccountSession(val token: String, val email: String?)
 
+data class ManagedApiKey(
+    val id: Long,
+    val name: String?,
+    val prefix: String?,
+    val createdAt: Instant?,
+    val lastUsedAt: Instant?,
+    val revoked: Boolean,
+)
+
+data class ManagedKeyList(val accountId: Long, val items: List<ManagedApiKey>)
+
+class ApiKeySecret(val item: ManagedApiKey, val secret: String)
+
 sealed interface AccountLoginResult {
     class SignedIn(val session: AccountSession) : AccountLoginResult
 

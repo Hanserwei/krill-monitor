@@ -96,7 +96,7 @@ Superba 将已有的 Krill Key 当作 PAT 或 API Key 使用，并未实现 Kril
 | `POST /api/request-logs/stats` | `total_cost_usd`、请求成功/失败数、输入/输出/缓存/推理 Token、`overall_tps`、`trend` 等 | 登录会话及日期筛选返回 200 |
 | `POST /api/request-logs/model-stats` | `items[].model`、`request_count`、`total_cost_usd`、`total_tokens` | 登录会话与日期筛选返回 200；账号模式排行来源 |
 | `POST /api/request-logs` | `items`、`total`、`page` | 官网日志页已观察到该请求；参数契约来自公开前端 |
-| `GET /api/tokens` | Key 的 ID、前缀、名称等筛选数据 | 仅记录前端契约，未导出账户 Key 列表 |
+| `GET /api/tokens` | Key 的 ID、前缀、名称、撤销及配置字段 | Android 管理入口使用；实际列表响应的 `data` 为数组，无分页参数 |
 
 日志及统计的筛选包括 `start_time`、`end_time`、`model`、`token_id`、`charge_type`、`method`，列表另带 `page`、`page_size`。官网日期组件按 UTC+8 构造不带时区的字符串，例如 `2026-11-08T00:00` 至 `2026-11-08T23:59:59`；App 的组织统计按 UTC 半开区间分桶，两者的“当天”不完全一致。契约见 [api-DGSdnat1.js](https://www.krill-code.com/assets/api-DGSdnat1.js)、[RequestLogsPage-BjsuDGOn.js](https://www.krill-code.com/assets/RequestLogsPage-BjsuDGOn.js)、[DateRangePicker-Ik74vWFD.js](https://www.krill-code.com/assets/DateRangePicker-Ik74vWFD.js)。
 
@@ -129,3 +129,24 @@ Superba 将已有的 Krill Key 当作 PAT 或 API Key 使用，并未实现 Kril
 用户随后授权了一次真实密码登录测试。`POST /api/auth/login` 返回 HTTP 429、`data.type=rate_limit_error`，固定消息为 `account temporarily locked due to too many failed attempts`；没有 `Retry-After` 或解锁时间。此响应尚未验证密码对错或取得会话，未继续重复登录、发送验证码、重置密码或修改账号安全设置。文档不记录账号和密码。
 
 客户端将已确认的锁定响应映射为明确中文提示；普通 429 无时间头时不显示“60 秒后重试”。内部默认 60 秒仅防重复请求，不是服务端解锁承诺；有有效 Retry-After 时标为服务端重试建议。密码、验证码发送和验证码校验分别保留本地冷却，避免客户端将一个入口的限制强加到另一入口；这不代表服务端允许绕过锁定。官网未公开锁定持续时间。
+
+## Android Key 管理与本地保存
+
+官网公开 [TokensPage](https://www.krill-code.com/assets/TokensPage-BexHU5PR.js) 与 [API 包装](https://www.krill-code.com/assets/api-BxSlaCyP.js) 定义以下个人账号接口，均使用现有账号 Bearer JWT，不使用 API Key 登录：
+
+| 操作 | 请求 | 响应 `data` |
+| --- | --- | --- |
+| 列表 | `GET /api/tokens` | 数组，含 `id`、`name`、`token_prefix`、`created_at`、`last_used_at`、`revoked_at` |
+| 创建 | `POST /api/tokens`，`{"name":"CI"}`，空名为 `null` | `{item, token}`，完整 `token` 仅返回一次 |
+| 重命名 | `PUT /api/tokens/{id}`，`{"name":"CI"}` | 更新后的列表项 |
+| 轮换 | `POST /api/tokens/{id}/rotate`，无正文 | `{item, token}`；旧值立即失效 |
+| 撤销 | `DELETE /api/tokens/{id}` | 不依赖返回正文，撤销不可恢复 |
+| 永久删除 | `DELETE /api/tokens/{id}/destroy` | 不依赖返回正文 |
+
+在用户授权下，已通过官网表单创建一个测试 Key。创建响应为 HTTP 200、`{success, code, data:{item, token}}`，`item.id` 为正整数。实际默认 `allow_balance_fallback=true`、`ip_whitelist_disabled=false`；创建后的渠道及扣费设置可以不保存直接关闭。应用本轮仅沿用默认配置，不提供渠道、消费限额或 IP 白名单编辑；完整 Key、登录凭据及真实响应不写入仓库。
+
+创建与轮换不自动重试；Android 同时关闭 OkHttp 连接重试，并将这两个 POST 的正文标为一次性，避免 `503 + Retry-After: 0` 再次发送。超时或响应无法确认时提示操作可能已生效，先刷新列表。新值先保存成功才提示“已加密保存在本机”，保存失败在当前会话保留待保存值并允许重试，避免重复创建；轮换未保存时禁止访问已失效的旧副本。查看和复制分别触发新的系统认证；取消不披露、不复制、不删数据，进入后台立即取消认证任务并清除明文。
+
+Android 11+ 本地库按已验证 `/api/auth/me` 的用户 ID 与 Key ID 隔离。每条随机 AES-256-GCM 数据密钥由 Android Keystore RSA-OAEP 公钥封装，用户 ID 与 Key ID 作为附加认证数据；解包必须使用 `BiometricPrompt.CryptoObject` 认证过的私钥操作，支持强生物识别或设备锁屏凭据。不使用账号会话存储密钥，不提供无认证降级，不将 Key 保存到 Web。密钥库 preferences 排除云备份和设备迁移；退出仅关闭明文，保留各账号密文。
+
+Web 不增加密钥页，代理也不开放 `/api/tokens` 路由。两端构建及 Android 47 项、Wasm 46 项、Node 8 项回归通过，包括真实 OkHttp 引擎的 503 不重放检查。Android 16 真机以虚拟 Key 验证密文保存、每次认证的 Keystore 约束、未认证解密被拒及一次系统认证后的实际解密往返；虚拟记录和临时自检入口均已移除，正式密钥列表与屏幕保护已验证。系统同时显示指纹和 PIN 入口，但未分别走完指纹及 PIN 两种确认路径，也未对真实 Key 执行轮换、撤销或删除。

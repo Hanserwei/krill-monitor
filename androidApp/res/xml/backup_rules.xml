@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <exclude domain="sharedpref" path="krill_monitor_secret.xml" />
+    <exclude domain="sharedpref" path="krill_monitor_key_vault.xml" />
+    <exclude domain="sharedpref" path="krill_monitor_secret.xml.bak" />
+    <exclude domain="sharedpref" path="krill_monitor_key_vault.xml.bak" />
 </full-backup-content>

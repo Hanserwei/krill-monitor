@@ -1,6 +1,7 @@
 package com.hanserwei.krill_monitor
 
 import io.ktor.client.HttpClient
+import io.ktor.client.HttpClientConfig
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.prepareGet
 import kotlin.time.TimeSource
@@ -9,7 +10,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
-fun defaultMonitorHttpClient() = HttpClient {
+internal expect fun platformMonitorHttpClient(configure: HttpClientConfig<*>.() -> Unit): HttpClient
+
+fun defaultMonitorHttpClient() = platformMonitorHttpClient {
     followRedirects = false
     expectSuccess = false
     install(HttpTimeout) {
