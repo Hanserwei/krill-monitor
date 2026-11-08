@@ -48,8 +48,31 @@ class MonitorFormatTest {
     }
 
     @Test
-    fun timestampsAreExplicitlyUtc() {
-        assertEquals("2026-12-31 23:59 UTC", utcTimeText(Instant.parse("2026-12-31T23:59:59Z")))
+    fun timestampsUseBeijingTimeAndKeepSeconds() {
+        assertEquals(
+            "2027-01-01 07:59:59 UTC+8",
+            beijingTimeText(Instant.parse("2026-12-31T23:59:59Z")),
+        )
+        assertEquals(
+            "2026-11-12 08:14:39 UTC+8",
+            beijingTimeText(Instant.parse("2026-11-12T00:14:39Z")),
+        )
+        assertEquals(
+            "2026-11-08 00:00:00 UTC+8",
+            beijingTimeText(Instant.parse("2026-11-08T00:00:00+08:00")),
+        )
+    }
+
+    @Test
+    fun quotaWindowMatchesWebsiteInclusiveEndAndSubscriptionExpiry() {
+        val reset = Instant.parse("2026-11-13T16:00:00Z")
+        val expiry = Instant.parse("2026-11-30T02:34:05Z")
+        assertEquals(
+            "2026-11-13 23:59:59 UTC+8",
+            quotaWindowEnd(reset, expiry)?.let(::beijingTimeText),
+        )
+        assertEquals(expiry, quotaWindowEnd(expiry, expiry))
+        assertNull(quotaWindowEnd(null, expiry))
     }
 
     @Test

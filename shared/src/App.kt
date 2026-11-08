@@ -181,6 +181,7 @@ fun App() {
         var session by remember { mutableStateOf<AccountSession?>(null) }
         var days by remember { mutableIntStateOf(7) }
         var revision by remember { mutableIntStateOf(0) }
+        var forceRefresh by remember(session, days) { mutableStateOf(false) }
         var page by remember { mutableStateOf(Page.Settings) }
         // 滚动状态和查询状态都放在页面外，切换页面不会重置位置或触发请求。
         val scrollStates =
@@ -229,9 +230,11 @@ fun App() {
             val active = session ?: return@LaunchedEffect
             loading = true
             error = null
+            val fresh = forceRefresh
+            forceRefresh = false
             try {
                 coroutineScope {
-                    val account = async { accountApi.load(active, days) }
+                    val account = async { accountApi.load(active, days, refresh = fresh) }
                     val probes = async { lineProber.probeLines() }
                     accountData = account.await()
                     lines = probes.await()
@@ -317,19 +320,11 @@ fun App() {
                                     color = MaterialTheme.colorScheme.primary,
                                 )
                                 Text(page.label, style = MaterialTheme.typography.titleLarge)
-                                session?.let { active ->
-                                    Text(
-                                        "Krill 账号 · ${accountData?.email ?: active.email ?: "已授权"}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
                             }
                             if (session != null) {
                                 FilledTonalButton(
                                     onClick = {
+                                        forceRefresh = true
                                         revision++
                                         toast("正在刷新监控数据")
                                     },
@@ -460,7 +455,7 @@ fun App() {
                                                 }
                                                 item {
                                                     Text(
-                                                        "查询于 ${utcTimeText(data.fetchedAt)}",
+                                                        "查询于 ${beijingTimeText(data.fetchedAt)}",
                                                         style = MaterialTheme.typography.bodySmall,
                                                     )
                                                 }
@@ -480,7 +475,7 @@ fun App() {
                                                                 Arrangement.spacedBy(8.dp)
                                                         ) {
                                                             Text(
-                                                                "${if (usage.stale) "过期缓存" else if (usage.fromCache) "缓存结果" else "最新结果"} · ${utcTimeText(usage.fetchedAt)} · 日期按 ${usage.timezone}",
+                                                                "${if (usage.stale) "过期缓存" else if (usage.fromCache) "缓存结果" else "最新结果"} · ${beijingTimeText(usage.fetchedAt)} · 日期按 ${usage.timezone}",
                                                                 style =
                                                                     MaterialTheme.typography
                                                                         .bodySmall,

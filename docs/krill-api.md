@@ -116,9 +116,11 @@ Superba 将已有的 Krill Key 当作 PAT 或 API Key 使用，并未实现 Kril
 - `POST /api/auth/login/send-code` 只发送 `{email}`；`data.resend_after_seconds` 为服务端重发秒数。缺失或无效时按规范化邮箱在当前客户端保留申请记录，编辑邮箱或重建面板不解除同邮箱保护；可先检查邮箱或到官网重新申请。成功请求不等于确认邮件已经送达。发送使用互斥保护，重复点击不会并发发邮件。
 - `POST /api/auth/login/verify` 发送 `{email,verification_code}`，响应同密码登录，可继续 TOTP。官网输入上限 6 位但未证明必须为 6 位数字，本客户端对去除首尾空白后 1～6 位的验证码提交给服务端校验。邮件码与 TOTP 使用不同字段和接口，均不持久化。
 - 记住登录仅保存 JWT；恢复后先查询 `/api/auth/me`。收到 401 立即移除本应用保存的会话并清空旧账户数据，退出登录也执行本地清除；官网未提供公开 logout 包装，不影响其他客户端会话。
-- 账号读请求使用 Bearer JWT，忽略浏览器 Cookie；每次刷新先验证身份。账号统计缓存 5 分钟，按令牌、范围和北京时间日期隔离；可选接口失败保留已知数据并明确标为缓存或未知。
+- 账号读请求使用 Bearer JWT，忽略浏览器 Cookie；每次查询先验证身份。账号统计缓存 5 分钟，按令牌、范围和北京时间日期隔离；手动刷新跳过未过期缓存，但不绕过限流冷却。可选接口失败保留已知数据并明确标为缓存或未知。
 - `stats.trend[]` 每桶为 `bucket_start`、`request_count`、`total_cost_usd`、`total_tokens`。实测 `bucket_start` 以 UTC 的 `Z` 时间返回，北京时间零点为前一日 UTC 16 点，因此先转成北京时间再归日，不能截取原始日期。模型排行使用 `model-stats`，不下载所有日志或伪造细分输入/输出 Token；细分 Token 来自统计汇总。
 - `request_count` 与 Credits 套餐保留各自单位，未知计费类型不推算美元额度。
+- 套餐显示对齐官网：周剩余为 `max(daily_limit_usd - used_usd, 0)`，缺字段不当零；周套餐 `duration_days >= 14` 时额外显示“月额度”，其剩余直接读取 `total_remaining_usd`，不能用累计 `total_used_usd` 推算。美元/Credits 环图按剩余计算，请求次数按已用计算。
+- 页面日期显示北京时间 UTC+8 并保留秒。周窗口从 `window_start_at` 到官网包含最后一秒的结束时刻：通常为 `window_reset_at - 1 秒`，最后一个窗口若等于套餐到期则保留到期时刻；不修改实际重置或到期数据。
 
 官网账号 API 的 OPTIONS 实测返回 405 且没有跨域允许头，Web 版通过 `tools/account-web.mjs` 同源转发。仅白名单内认证设置、验证码申请与校验、密码/TOTP 登录、身份、钱包、套餐和两个统计接口被允许；固定上游 `https://www.krill-code.com`，不转发 Cookie/Set-Cookie，不跟随重定向、不记录凭据，请求上限 64 KiB、响应上限 2 MiB，15 秒超时。Android 直接连接官网 HTTPS。
 

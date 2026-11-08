@@ -43,8 +43,8 @@ internal fun modelShares(models: List<ModelUsage>): ChartShares {
     return ChartShares(if (other > 0) top + ChartShare("其他", other) else top, incomplete)
 }
 
-internal fun quotaRatio(used: Double?, limit: Double?): Double? {
-    val value = chartCost(used) ?: return null
+internal fun quotaRatio(amount: Double?, limit: Double?): Double? {
+    val value = chartCost(amount) ?: return null
     val cap = chartCost(limit)?.takeIf { it > 0 } ?: return null
     return (value / cap).coerceAtMost(Double.MAX_VALUE)
 }
@@ -269,13 +269,19 @@ internal fun ModelShareChart(models: List<ModelUsage>, modifier: Modifier = Modi
 }
 
 @Composable
-internal fun QuotaRing(used: Double?, limit: Double?, modifier: Modifier = Modifier) {
-    val ratio = quotaRatio(used, limit)
+internal fun QuotaRing(
+    amount: Double?,
+    limit: Double?,
+    modifier: Modifier = Modifier,
+    remaining: Boolean = true,
+) {
+    val ratio = quotaRatio(amount, limit)
+    val caption = if (remaining) "剩余" else "已用"
     val track = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
     val color =
-        if (ratio != null && ratio >= 1) Color(0xFFE29B58) else MaterialTheme.colorScheme.primary
-    val description =
-        "已用 ${used?.takeIf { it.isFinite() && it >= 0 } ?: "—"} / 限额 ${limit?.takeIf { it.isFinite() && it >= 0 } ?: "—"}"
+        if (ratio != null && (if (remaining) ratio <= 0.1 else ratio >= 1)) Color(0xFFE29B58)
+        else MaterialTheme.colorScheme.primary
+    val description = "$caption ${chartCost(amount) ?: "—"} / 限额 ${chartCost(limit) ?: "—"}"
     Box(
         modifier.semantics { contentDescription = description },
         contentAlignment = androidx.compose.ui.Alignment.Center,
@@ -304,7 +310,18 @@ internal fun QuotaRing(used: Double?, limit: Double?, modifier: Modifier = Modif
                     style = Stroke(stroke),
                 )
         }
-        Text(ratio?.let(::percentText) ?: "—", style = MaterialTheme.typography.labelMedium)
+        Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+            Text(
+                ratio?.let(::percentText) ?: "—",
+                style = MaterialTheme.typography.labelMedium,
+                color = color,
+            )
+            Text(
+                caption,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

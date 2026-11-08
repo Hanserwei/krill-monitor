@@ -15,7 +15,7 @@ class AccountClientTest {
     private val user = """{"id":7,"email":"demo@example.test","tos_accepted":true}"""
     private val subscription =
         """{"subscriptions":[
-        {"status":"active","plan":{"name":"Week","billing_type":"usd_weekly","duration_days":30},"quota":{"daily_limit_usd":"20","used_usd":"3","remaining_usd":"17","window_reset_at":"2026-11-12T00:00:00+08:00"},"total_limit_usd":"80","total_used_usd":"8","total_remaining_usd":"72","subscription_end_at":"2026-12-01T00:00:00+08:00"},
+        {"status":"active","plan":{"name":"Week","billing_type":"usd_weekly","duration_days":30},"quota":{"daily_limit_usd":"20","used_usd":"3","remaining_usd":"10","window_start_at":"2026-11-05T00:00:00+08:00","window_reset_at":"2026-11-12T00:00:00+08:00"},"total_limit_usd":"80","total_used_usd":"8","total_remaining_usd":"0","subscription_end_at":"2026-12-01T00:00:00+08:00"},
         {"status":"active","plan":{"name":"Daily","billing_type":"usd_daily"},"total_limit_usd":"100","total_used_usd":"25","total_remaining_usd":"75"},
         {"status":"active","plan":{"name":"Month","billing_type":"usd_monthly"},"quota":{"daily_limit_usd":"90","used_usd":"10","remaining_usd":"80"}},
         {"status":"active","plan":{"name":"Credits","billing_type":"credits","total_credits":"1000"},"quota":{"limit_credits":"1000","remaining_credits":"900"}},
@@ -158,7 +158,11 @@ class AccountClientTest {
         val week = dashboard.subscriptions.first()
         assertEquals("本周额度", week.quotas.first().label)
         assertEquals(17.0, week.quotas.first().remaining)
-        assertEquals(72.0, week.quotas.last().remaining)
+        assertEquals(Instant.parse("2026-11-04T16:00:00Z"), week.quotas.first().startsAt)
+        assertEquals(Instant.parse("2026-11-11T16:00:00Z"), week.quotas.first().resetsAt)
+        assertEquals("月额度", week.quotas.last().label)
+        assertEquals(0.0, week.quotas.last().remaining)
+        assertNull(week.quotas.last().startsAt)
         assertEquals("credits", dashboard.subscriptions[3].quotas.single().unit)
         assertEquals("次", dashboard.subscriptions[4].quotas.first().unit)
         assertEquals(1.25, dashboard.statistics?.costUsd)
@@ -177,15 +181,99 @@ class AccountClientTest {
     }
 
     @Test
-    fun cacheIsIsolatedAndUnauthorizedAlwaysClearsTheSession() = runTest {
-        var clock = initial
+    fun weeklyQuotaUsesValidInputsAndMonthlyDurationBoundary() = runTest {
+        val durations = listOf(7, 8, 13, 14, 30)
+        val items =
+            durations.joinToString(",") { days ->
+                """{"plan":{"billing_type":"usd_weekly","duration_days":$days},"quota":{"daily_limit_usd":10,"used_usd":12,"remaining_usd":9}}"""
+            }
+        val extra =
+            """{"plan":{"billing_type":"usd_weekly"},"quota":{"used_usd":2,"remaining_usd":8}},
+            {"plan":{"billing_type":"usd_weekly"},"quota":{"daily_limit_usd":10,"remaining_usd":8}},
+            {"plan":{"billing_type":"usd_weekly"},"quota":{"daily_limit_usd":"NaN","used_usd":2}},
+            {"plan":{"billing_type":"usd_weekly"},"quota":{"daily_limit_usd":10,"used_usd":-1}}"""
+        val client =
+            AccountClient(
+                HttpClient(
+                    MockEngine { request ->
+                        respond(
+                            envelope(
+                                when (request.url.encodedPath) {
+                                    "/api/auth/me" -> user
+                                    "/api/subscription" -> """{"subscriptions":[$items,$extra]}"""
+                                    "/api/credits" -> "{}"
+                                    "/api/request-logs/model-stats" -> models
+                                    else -> stats
+                                }
+                            )
+                        )
+                    }
+                ),
+                now = { initial },
+            )
+        val subscriptions = client.load(AccountSession("token", null)).subscriptions
+        assertEquals(listOf(1, 1, 1, 2, 2), subscriptions.take(5).map { it.quotas.size })
+        subscriptions.take(5).forEach { assertEquals(0.0, it.quotas.first().remaining) }
+        subscriptions.drop(5).forEach { assertNull(it.quotas.single().remaining) }
+        client.close()
+    }
+
+    @Test
+    fun refreshRespectsAccountRateLimitAndReturnsStaleCache() = runTest {
+        var limited = false
         var calls = 0
-        var unauthorized = false
         val client =
             AccountClient(
                 HttpClient(
                     MockEngine { request ->
                         calls++
+                        if (limited)
+                            respond(
+                                "{}",
+                                HttpStatusCode.TooManyRequests,
+                                headersOf(HttpHeaders.RetryAfter, "60"),
+                            )
+                        else
+                            respond(
+                                envelope(
+                                    when (request.url.encodedPath) {
+                                        "/api/auth/me" -> user
+                                        "/api/subscription" -> subscription
+                                        "/api/credits" -> """{"balance_usd":2}"""
+                                        "/api/request-logs/model-stats" -> models
+                                        else -> stats
+                                    }
+                                )
+                            )
+                    }
+                ),
+                now = { initial },
+            )
+        val session = AccountSession("token", null)
+        client.load(session)
+        limited = true
+        assertFailsWith<AccountAccessException> { client.load(session, refresh = true) }
+        val before = calls
+        val stale = client.load(session, refresh = true)
+        assertEquals(before, calls)
+        assertEquals(2.0, stale.balanceUsd)
+        assertTrue(stale.usage!!.stale)
+        client.close()
+    }
+
+    @Test
+    fun cacheIsIsolatedAndUnauthorizedAlwaysClearsTheSession() = runTest {
+        var clock = initial
+        var calls = 0
+        var unauthorized = false
+        var balance = 2
+        val paths = mutableListOf<String>()
+        val client =
+            AccountClient(
+                HttpClient(
+                    MockEngine { request ->
+                        calls++
+                        paths += request.url.encodedPath
                         if (unauthorized) respond("private-jwt", HttpStatusCode.Unauthorized)
                         else
                             respond(
@@ -194,7 +282,7 @@ class AccountClientTest {
                                         "/api/auth/me" -> user
                                         "/api/subscription" -> """{"subscriptions":[]}"""
                                         "/api/credits" ->
-                                            """{"balance_usd":2,"welfare_balance_usd":0}"""
+                                            """{"balance_usd":$balance,"welfare_balance_usd":0}"""
                                         "/api/request-logs/model-stats" -> models
                                         else -> stats
                                     }
@@ -209,11 +297,30 @@ class AccountClientTest {
         val before = calls
         assertTrue(client.load(AccountSession("token-a", null)).usage!!.fromCache)
         assertEquals(before + 1, calls) // 命中缓存仍校验 me。
+        balance = 5
+        paths.clear()
+        val refreshed = client.load(AccountSession("token-a", null), refresh = true)
+        assertEquals(5.0, refreshed.balanceUsd)
+        assertFalse(refreshed.usage!!.fromCache)
+        assertEquals(
+            setOf(
+                "/api/auth/me",
+                "/api/subscription",
+                "/api/credits",
+                "/api/request-logs/stats",
+                "/api/request-logs/model-stats",
+            ),
+            paths.toSet(),
+        )
+        assertEquals(5, paths.size)
+        assertEquals(5.0, client.load(AccountSession("token-a", null)).balanceUsd)
         assertFalse(client.load(AccountSession("token-b", null)).usage!!.fromCache)
         clock = Instant.fromEpochSeconds(initial.epochSeconds + 301)
         assertFalse(client.load(AccountSession("token-b", null)).usage!!.fromCache)
         unauthorized = true
-        assertFailsWith<AccountSessionExpired> { client.load(AccountSession("token-b", null)) }
+        assertFailsWith<AccountSessionExpired> {
+            client.load(AccountSession("token-b", null), refresh = true)
+        }
         unauthorized = false
         assertFalse(client.load(AccountSession("token-b", null)).usage!!.fromCache)
         client.close()

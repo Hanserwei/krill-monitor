@@ -24,6 +24,7 @@ data class AccountQuota(
     val used: Double?,
     val remaining: Double?,
     val resetsAt: Instant? = null,
+    val startsAt: Instant? = null,
 )
 
 data class AccountSubscription(

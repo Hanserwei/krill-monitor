@@ -118,7 +118,11 @@ class AccountClient(
         )
     }
 
-    suspend fun load(session: AccountSession, days: Int = 7): AccountDashboard = coroutineScope {
+    suspend fun load(
+        session: AccountSession,
+        days: Int = 7,
+        refresh: Boolean = false,
+    ): AccountDashboard = coroutineScope {
         if (!safeCredential(session.token)) throw AccountSessionExpired()
         if (days !in listOf(7, 30)) throw AccountAccessException("查询范围仅支持 7 或 30 天")
         val time = now()
@@ -147,7 +151,9 @@ class AccountClient(
                 throw e
             }
         validateUser(me)
-        if (old != null && time.epochSeconds - old.fetchedAt.epochSeconds in 0 until 300)
+        if (
+            !refresh && old != null && time.epochSeconds - old.fetchedAt.epochSeconds in 0 until 300
+        )
             return@coroutineScope old.copy(
                 email = me.text("email"),
                 usage = old.usage?.copy(fromCache = true),
@@ -441,15 +447,24 @@ private fun parseSubscriptions(
             used: String,
             remaining: String,
             reset: Instant? = null,
+            start: Instant? = null,
+            weekly: Boolean = false,
         ) {
+            val limitAmount = source.amount(limit)
+            val usedAmount = source.amount(used)
             quotas +=
                 AccountQuota(
                     label,
                     "USD",
-                    source.amount(limit),
-                    source.amount(used),
-                    source.amount(remaining),
+                    limitAmount,
+                    usedAmount,
+                    if (weekly) {
+                        if (limitAmount != null && usedAmount != null)
+                            (limitAmount - usedAmount).coerceAtLeast(0.0)
+                        else null
+                    } else source.amount(remaining),
                     reset,
+                    start,
                 )
         }
         when {
@@ -486,9 +501,11 @@ private fun parseSubscriptions(
                     "used_usd",
                     "remaining_usd",
                     quota.instant("window_reset_at"),
+                    quota.instant("window_start_at"),
+                    weekly = true,
                 )
-                if ((plan.amount("duration_days") ?: 0.0) > 7)
-                    usd("总额度", item, "total_limit_usd", "total_used_usd", "total_remaining_usd")
+                if ((plan.amount("duration_days") ?: 0.0) >= 14)
+                    usd("月额度", item, "total_limit_usd", "total_used_usd", "total_remaining_usd")
             }
             plan.text("billing_type") == "usd_monthly" ->
                 usd(

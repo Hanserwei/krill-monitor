@@ -1,6 +1,7 @@
 package com.hanserwei.krill_monitor
 
 import kotlin.math.roundToLong
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 internal fun countText(value: Long?): String =
@@ -44,8 +45,16 @@ internal fun cacheRatioText(cached: Long?, input: Long?): String {
     return "${tenths / 10}.${tenths % 10}%"
 }
 
-internal fun utcTimeText(instant: Instant): String =
-    instant.toString().take(16).replace('T', ' ') + " UTC"
+internal fun beijingTimeText(instant: Instant): String =
+    Instant.fromEpochSeconds(instant.epochSeconds + 8 * 3600)
+        .toString()
+        .take(19)
+        .replace('T', ' ') + " UTC+8"
+
+internal fun quotaWindowEnd(reset: Instant?, expiry: Instant?): Instant? = reset?.let {
+    // 官网显示包含最后一秒的窗口结束；最终窗口以套餐到期时刻为准。
+    if (it == expiry) it else it - 1.seconds
+}
 
 internal fun quotaValueText(value: Double?, unit: String): String =
     when {

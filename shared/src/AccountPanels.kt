@@ -425,16 +425,22 @@ internal fun AccountSubscriptions(data: AccountDashboard) {
                         }
                     }
                     Text(
-                        "到期：${subscription.expiresAt?.let(::utcTimeText) ?: "未提供"}",
+                        "到期：${subscription.expiresAt?.let(::beijingTimeText) ?: "未提供"}",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     subscription.quotas.forEach { quota ->
                         fun amount(value: Double?): String = quotaValueText(value, quota.unit)
+                        val remaining = quota.unit != "次"
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            QuotaRing(quota.used, quota.limit, Modifier.size(76.dp))
+                            QuotaRing(
+                                if (remaining) quota.remaining else quota.used,
+                                quota.limit,
+                                Modifier.size(76.dp),
+                                remaining = remaining,
+                            )
                             Column(
                                 Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -444,20 +450,27 @@ internal fun AccountSubscriptions(data: AccountDashboard) {
                                     fontWeight = FontWeight.Medium,
                                 )
                                 Text(
-                                    "剩余 ${amount(quota.remaining)}",
+                                    "${if (remaining) "剩余" else "已用"} ${amount(if (remaining) quota.remaining else quota.used)} / ${amount(quota.limit)}",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
-                                Text(
-                                    "已用 ${amount(quota.used)} / ${amount(quota.limit)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                                quota.resetsAt?.let {
+                                if (remaining && quota.used != null)
                                     Text(
-                                        "重置：${utcTimeText(it)}",
+                                        "累计消耗 ${amount(quota.used)}",
                                         style = MaterialTheme.typography.bodySmall,
                                     )
-                                }
                             }
+                        }
+                        quota.startsAt?.let {
+                            Text(
+                                "周期开始：${beijingTimeText(it)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        quotaWindowEnd(quota.resetsAt, subscription.expiresAt)?.let {
+                            Text(
+                                "周期结束：${beijingTimeText(it)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                     }
                 }
