@@ -40,3 +40,17 @@ test("a matching tag still requires an existing signing key without logging its 
   assert.match(absent.stderr, /Release keystore does not exist/);
   assert.doesNotMatch(absent.stdout + absent.stderr, /synthetic-secret-never-print/);
 });
+
+test("APK resources include the project and third-party license texts", () => {
+  for (const [source, packaged] of [
+    ["LICENSE", "MIT-LICENSE.txt"],
+    ["LICENSES/Apache-2.0.txt", "Apache-2.0.txt"],
+    ["THIRD_PARTY_NOTICES.md", "ThirdPartyNotices.md"],
+  ]) {
+    assert.equal(
+      readFileSync(new URL(`../${source}`, import.meta.url), "utf8"),
+      readFileSync(new URL(`../shared/composeResources/files/${packaged}`, import.meta.url), "utf8"),
+      `Bundled license is out of date: ${packaged}`,
+    );
+  }
+});

@@ -24,7 +24,7 @@ Android Key 管理支持渠道多选、默认配置、倍率及互斥规则。�
 
 ## 本地运行与构建
 
-需要 JDK 25、Android SDK 37 和 Build Tools 37.0.0；Web 本地代理需要 Node.js 22。根目录的 `kotlin` / `kotlin.bat` 使用固定的 Kotlin Toolchain 0.13.0。
+需要 JDK 25、Android SDK 37（平台包名 `platforms;android-37.0`）和 Build Tools 37.0.0；Web 本地代理需要 Node.js 22。根目录的 `kotlin` / `kotlin.bat` 使用固定的 Kotlin Toolchain 0.13.0，并自动下载对应 SDK 包。
 
 ```sh
 # Android：连接设备或启动模拟器
@@ -40,7 +40,7 @@ node tools/account-web.mjs 8080
 # 测试使用模拟响应，不需要真实账号或验证码
 ./kotlin test -m shared --platform android
 ./kotlin test -m shared --platform wasmJs
-node --test tools/account-web.test.mjs
+node --test tools/account-web.test.mjs tools/release-apk.test.mjs
 ```
 
 Android 调试 APK 位于 `build/tasks/_androidApp_buildAndroidDebug/gradle-project-debug.apk`。官网未开放 Web 所需的跨域访问；随附 Node 服务提供同源代理，默认仅监听本机。普通 `./kotlin run -m webApp` 不包含账号代理。Android 直接访问官网 HTTPS。

@@ -29,6 +29,10 @@ test-dependencies:
   - $libs.kotlinx.coroutines.test
 
 settings:
+  android:
+    compileSdk: 37
+    targetSdk: 37
+    buildToolsVersion: "37.0.0"
   compose:
     enabled: true
     resources:

@@ -44,6 +44,10 @@ apk="krill-monitor-$version.apk"
 badging=$("$build_tools/aapt" dump badging "$scratch/$apk")
 grep -F "package: name='com.hanserwei.krill_monitor' versionCode='" <<< "$badging" >/dev/null
 grep -F "versionName='$version'" <<< "$badging" >/dev/null
+for license in MIT-LICENSE.txt Apache-2.0.txt ThirdPartyNotices.md NotoSansCJK-LICENSE.txt; do
+  unzip -p "$scratch/$apk" "assets/composeResources/com.hanserwei.krill_monitor.resources/files/$license" > "$scratch/$license"
+  test -s "$scratch/$license"
+done
 if grep -q '^application-debuggable' <<< "$badging"; then
   echo "Refusing to publish a debuggable APK" >&2
   exit 1
