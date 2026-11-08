@@ -1,0 +1,4 @@
+modules:
+  - androidApp
+  - shared
+  - webApp
