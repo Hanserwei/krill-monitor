@@ -12,9 +12,18 @@ dependencies:
   - $compose.hotReload.runtimeApi
   - $libs.androidx.lifecycle.viewmodel.compose
   - $libs.androidx.lifecycle.runtime.compose
+  # Ktor 3.4 的 Wasm 引擎已包含在 core 中。
+  - $libs.ktor.client.core
+  - $libs.kotlinx.serialization.json
+  - $libs.kotlinx.coroutines.core
 
 dependencies@android:
   - $compose.uiTooling
+  - $libs.ktor.client.okhttp
+
+test-dependencies:
+  - $libs.ktor.client.mock
+  - $libs.kotlinx.coroutines.test
 
 settings:
   compose:

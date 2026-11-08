@@ -3,6 +3,7 @@ product: wasm-js/app
 dependencies:
   - //shared
   - $compose.ui
+  - $compose.components.resources
 
 settings:
   compose: enabled
