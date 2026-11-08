@@ -36,7 +36,10 @@ jobs:
             ~/.gradle/wrapper
           key: ${{ runner.os }}-kotlin-${{ hashFiles('kotlin', '**/module.yaml', 'libs.versions.toml') }}
       - name: Install Android SDK
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools platforms;android-37 build-tools;37.0.0
+          log-accepted-android-sdk-licenses: false
       - name: Build Android and Web
         run: ./kotlin build
       - name: Test Android
@@ -73,11 +76,15 @@ jobs:
         with:
           path: |
             ~/.cache/JetBrains/Kotlin
+            ~/.cache/ms-playwright
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: ${{ runner.os }}-kotlin-${{ hashFiles('kotlin', '**/module.yaml', 'libs.versions.toml') }}
       - name: Install Android SDK
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools platforms;android-37 build-tools;37.0.0
+          log-accepted-android-sdk-licenses: false
       - name: Build and sign release APK
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
