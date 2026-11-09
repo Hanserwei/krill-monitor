@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -131,7 +132,7 @@ internal fun AccountLoginPanel(
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     enabled = !busy,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
                 )
                 if (useEmailCode) {
                     OutlinedTextField(
@@ -305,9 +306,9 @@ internal fun AccountLoginPanel(
 }
 
 @Composable
-internal fun AccountOverview(data: AccountDashboard, days: Int, onUsage: () -> Unit = {}) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
+internal fun AccountOverview(data: AccountDashboard, days: Int, wide: Boolean = false, onUsage: () -> Unit = {}) {
+    @Composable fun Wallet(modifier: Modifier = Modifier) {
+        Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("钱包余额 · USD", style = MaterialTheme.typography.bodyMedium)
                 Text(usdText(data.balanceUsd), style = MaterialTheme.typography.displayLarge.copy(fontSize = 48.sp), fontWeight = FontWeight.SemiBold)
@@ -319,14 +320,29 @@ internal fun AccountOverview(data: AccountDashboard, days: Int, onUsage: () -> U
                 }
             }
         }
+    }
+    @Composable fun Stats(modifier: Modifier = Modifier) {
         val stats = data.statistics
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AccountStatTile("近${days}天费用", usdText(stats?.costUsd), Modifier.weight(1f), onUsage)
-            AccountStatTile("请求", countText(stats?.requests), Modifier.weight(1f))
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AccountStatTile("近${days}天费用", usdText(stats?.costUsd), Modifier.weight(1f), onUsage)
+                AccountStatTile("请求", countText(stats?.requests), Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AccountStatTile("失败请求", countText(stats?.failedRequests), Modifier.weight(1f))
+                AccountStatTile("总 Token", compactCount(stats?.totalTokens), Modifier.weight(1f).semantics { contentDescription = "总 Token ${countText(stats?.totalTokens)}" })
+            }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AccountStatTile("失败请求", countText(stats?.failedRequests), Modifier.weight(1f))
-            AccountStatTile("总 Token", compactCount(stats?.totalTokens), Modifier.weight(1f).semantics { contentDescription = "总 Token ${countText(stats?.totalTokens)}" })
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (wide) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Wallet(Modifier.weight(0.45f))
+                Stats(Modifier.weight(0.55f))
+            }
+        } else {
+            Wallet()
+            Stats()
         }
         Text("官网账号统计 · 北京时间 UTC+8 · 钱包与套餐额度独立", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -345,20 +361,20 @@ private fun AccountStatTile(label: String, value: String, modifier: Modifier = M
 }
 
 @Composable
-internal fun AccountSubscriptions(data: AccountDashboard) {
+internal fun AccountSubscriptions(data: AccountDashboard, wide: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("我的套餐", style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp), fontWeight = FontWeight.SemiBold)
         if (data.subscriptions.isEmpty()) {
             Text(if (data.warnings.any { it.contains("套餐") }) "套餐信息暂不可用" else "当前没有套餐", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        data.subscriptions.forEach { subscription ->
+        @Composable fun SubscriptionCard(subscription: AccountSubscription, modifier: Modifier = Modifier) {
             val status = when (subscription.status) {
                 "active" -> "生效中"
                 "expired" -> "已到期"
                 "frozen" -> "已冻结"
                 else -> subscription.status.ifBlank { "—" }
             }
-            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+            Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(subscription.name.ifBlank { "—" }, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp), fontWeight = FontWeight.SemiBold)
@@ -387,14 +403,24 @@ internal fun AccountSubscriptions(data: AccountDashboard) {
                 }
             }
         }
+        if (wide) {
+            data.subscriptions.chunked(2).forEach { pair ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    pair.forEach { subscription -> SubscriptionCard(subscription, Modifier.weight(1f)) }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        } else {
+            data.subscriptions.forEach { SubscriptionCard(it) }
+        }
         Text("钱包与套餐额度独立", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-internal fun AccountSettingsPanel(email: String?, secureStorage: Boolean, onLogout: () -> Unit) {
+internal fun AccountSettingsPanel(email: String?, secureStorage: Boolean, onLogout: () -> Unit, wide: Boolean = false, web: Boolean = false) {
     var confirmLogout by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    @Composable fun AccountCard() {
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.primaryContainer) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("当前账号", style = MaterialTheme.typography.labelLarge)
@@ -403,35 +429,58 @@ internal fun AccountSettingsPanel(email: String?, secureStorage: Boolean, onLogo
                     MonitorIcon("verified_user", modifier = Modifier.size(18.dp))
                     Text("已登录", style = MaterialTheme.typography.labelMedium)
                 }
-                Text(if (secureStorage) "选择记住登录时，会话令牌在设备上加密保存。" else "选择记住登录时，会话令牌保存在浏览器本地，同源脚本可读取。", style = MaterialTheme.typography.bodySmall)
+                Text(if (secureStorage) "选择记住登录时，会话令牌在设备上加密保存。" else "选择记住登录时，会话令牌保存在浏览器 localStorage，同源脚本可读取。", style = MaterialTheme.typography.bodySmall)
             }
         }
-        Text("隐私与数据", style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp), fontWeight = FontWeight.SemiBold)
-        val details = listOf(
-            Triple("lock", "会话存储", if (secureStorage) "可在设备上加密保存会话令牌，不保存密码或验证码" else "可在浏览器本地保存会话令牌，同源脚本可读取；不保存密码或验证码"),
-            Triple("schedule", "统计时间与币种", "USD · 北京时间 UTC+8"),
-            Triple("account_balance_wallet", "账户额度", "钱包与套餐额度独立"),
-            Triple("shield", "匿名线路隐私", "匿名探测线路不携带账号凭据"),
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            details.forEachIndexed { index, (icon, title, detail) ->
-                ListItem(
-                    modifier = Modifier.clip(groupedShape(index, details.size)),
-                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    headlineContent = { Text(title) },
-                    supportingContent = { Text(detail) },
-                    leadingContent = {
-                        Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
-                            Box(contentAlignment = Alignment.Center) { MonitorIcon(icon, modifier = Modifier.size(22.dp)) }
-                        }
-                    },
-                )
+    }
+    @Composable fun PrivacyDetails() {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("隐私与数据", style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp), fontWeight = FontWeight.SemiBold)
+            val details = listOf(
+                Triple("lock", "会话存储", if (secureStorage) "可在设备上加密保存会话令牌，不保存密码或验证码" else "可在浏览器 localStorage 保存会话令牌，同源脚本可读取；不保存密码或验证码"),
+                Triple("schedule", "统计时间与币种", "USD · 北京时间 UTC+8"),
+                Triple("account_balance_wallet", "账户额度", "钱包与套餐额度独立"),
+                Triple("shield", "匿名线路隐私", "匿名探测线路不携带账号凭据"),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                details.forEachIndexed { index, (icon, title, detail) ->
+                    ListItem(
+                        modifier = Modifier.clip(groupedShape(index, details.size)),
+                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                        headlineContent = { Text(title) },
+                        supportingContent = { Text(detail) },
+                        leadingContent = {
+                            Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
+                                Box(contentAlignment = Alignment.Center) { MonitorIcon(icon, modifier = Modifier.size(22.dp)) }
+                            }
+                        },
+                    )
+                }
             }
         }
-        OutlinedButton(onClick = { confirmLogout = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+    }
+    @Composable fun LogoutButton() {
+        // shortcut: Compose Web 1.12.1 retains closed-dialog semantics, restore confirmation after its upstream fix.
+        OutlinedButton(onClick = { if (web) onLogout() else confirmLogout = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
             MonitorIcon("logout", modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text("退出登录")
+        }
+        if (web) Text("仅清除本应用会话，不会退出 Krill 官网。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        if (wide) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    AccountCard()
+                    LogoutButton()
+                }
+                Column(Modifier.weight(1f)) { PrivacyDetails() }
+            }
+        } else {
+            AccountCard()
+            PrivacyDetails()
+            LogoutButton()
         }
         Text("第三方非官方客户端，与 Krill 官方无隶属关系。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }

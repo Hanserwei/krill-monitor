@@ -25,6 +25,11 @@ const allowed = new Set([
   "POST /api/request-logs/stats",
   "POST /api/request-logs/model-stats",
 ]);
+const lineHosts = new Map([
+  ["/krill-lines/overseas", "api.kbsfdxc.net"],
+  ["/krill-lines/china", "api-slb.kbsfdxc.net"],
+  ["/krill-lines/cdn", "api.kbsfdxc.com"],
+]);
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".mjs": "text/javascript",
@@ -72,22 +77,28 @@ export function createAccountServer(
         return fail(response, 421, "Invalid host");
       if (
         request.headers.origin &&
-        new URL(request.headers.origin).host !== host
+        request.headers.origin !== `http://${host}`
       )
         return fail(response, 403, "Cross-origin requests are not allowed");
       const rawPath = decodeURIComponent(request.url.split("?")[0]);
       if (rawPath.split("/").includes("..") || rawPath.includes("\\"))
         return fail(response, 403, "Invalid path");
       const url = new URL(request.url, "http://" + host);
-      if (url.pathname.startsWith("/krill-account/")) {
-        const endpoint = url.pathname.slice("/krill-account".length);
-        const publicStatus = endpoint === "/api/public/channel-status";
-        const validQuery = publicStatus ? url.search === "?hours=24" : !url.search;
-        if (!allowed.has(`${request.method} ${endpoint}`) || !validQuery)
-          return fail(response, 405, "Account endpoint is not allowed");
+      if (url.pathname.startsWith("/krill-account/") || url.pathname.startsWith("/krill-lines")) {
+        const line = url.pathname.startsWith("/krill-lines");
+        const endpoint = line ? "/v1/models" : url.pathname.slice("/krill-account".length);
+        const publicStatus = !line && endpoint === "/api/public/channel-status";
+        const validQuery = publicStatus
+          ? url.search === "?hours=24"
+          : line ? !request.url.includes("?") : !url.search;
+        const allowedEndpoint = line
+          ? request.method === "GET" && lineHosts.has(url.pathname)
+          : allowed.has(`${request.method} ${endpoint}`);
+        if (!allowedEndpoint || !validQuery)
+          return fail(response, 405, line ? "Line endpoint is not allowed" : "Account endpoint is not allowed");
         const authorization = request.headers.authorization;
         const publicAuth =
-          endpoint.startsWith("/api/auth/login") ||
+          line || endpoint.startsWith("/api/auth/login") ||
           endpoint === "/api/public/auth-settings" || publicStatus;
         if (
           !publicAuth &&
@@ -111,7 +122,7 @@ export function createAccountServer(
         const outgoing = requestUpstream(
           {
             protocol: "https:",
-            hostname: "www.krill-code.com",
+            hostname: line ? lineHosts.get(url.pathname) : "www.krill-code.com",
             port: 443,
             path: endpoint + (publicStatus ? "?hours=24" : ""),
             method: request.method,
@@ -139,7 +150,7 @@ export function createAccountServer(
               if (!finished) {
                 finished = true;
                 clearTimeout(timer);
-                fail(response, 502, "Account response unavailable");
+                fail(response, 502, line ? "Line response unavailable" : "Account response unavailable");
               }
             }
           },
@@ -148,14 +159,14 @@ export function createAccountServer(
           if (!finished) {
             finished = true;
             outgoing.destroy();
-            fail(response, 504, "Account request timed out");
+            fail(response, 504, line ? "Line request timed out" : "Account request timed out");
           }
         }, 15000);
         outgoing.on("error", () => {
           if (!finished) {
             finished = true;
             clearTimeout(timer);
-            fail(response, 502, "Account service unavailable");
+            fail(response, 502, line ? "Line service unavailable" : "Account service unavailable");
           }
         });
         response.on("close", () => {

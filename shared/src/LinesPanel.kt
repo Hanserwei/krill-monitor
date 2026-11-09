@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.sp
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-internal fun LinesPanel(lines: List<LineHealth>, loading: Boolean) {
+internal fun LinesPanel(lines: List<LineHealth>, loading: Boolean, web: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
             Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -64,7 +64,7 @@ internal fun LinesPanel(lines: List<LineHealth>, loading: Boolean) {
                                 }
                             },
                             trailingContent = {
-                                if (health != null) MonitorIcon(if (health.reachable) "check_circle" else "error_outline", contentDescription = if (health.reachable) "可达" else "失败", tint = if (health.reachable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                                if (health != null) MonitorIcon(if (health.reachable) "check_circle" else "error_outline", tint = if (health.reachable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                                 else Text("—")
                             },
                         )
@@ -79,5 +79,6 @@ internal fun LinesPanel(lines: List<LineHealth>, loading: Boolean) {
             }
         }
         Text("线路延迟不等于 TTFT（首 token 时间）。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (web) Text("浏览器经同源中转匿名探测；延迟包含中转开销。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -201,4 +202,53 @@ test("only public channel status accepts responses above the private limit", asy
   assert.equal((await fetch(big.origin + "/krill-account/api/credits", { headers: { Authorization: "Bearer test" } })).status, 502);
   const excessive = await fixture(t, "x".repeat(8 * 1024 * 1024 + 1));
   assert.equal((await fetch(excessive.origin + "/krill-account/api/public/channel-status?hours=24")).status, 502);
+});
+
+test("line probes use only fixed hosts without credentials", async (t) => {
+  const { origin, calls } = await fixture(t, '{}', 401);
+  for (const [name, host] of [["overseas", "api.kbsfdxc.net"], ["china", "api-slb.kbsfdxc.net"], ["cdn", "api.kbsfdxc.com"]]) {
+    const response = await fetch(`${origin}/krill-lines/${name}`, {
+      headers: { Authorization: "Bearer private", Cookie: "private-cookie", Origin: origin },
+    });
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get("set-cookie"), null);
+    assert.equal(calls.at(-1).hostname, host);
+    assert.equal(calls.at(-1).path, "/v1/models");
+    assert.equal(calls.at(-1).method, "GET");
+    assert.equal(calls.at(-1).headers.Authorization, undefined);
+    assert.equal(calls.at(-1).headers.Cookie, undefined);
+  }
+  for (const [route, options, status] of [
+    ["/krill-lines/other", {}, 405],
+    ["/krill-lines/overseas/extra", {}, 405],
+    ["/krill-lines/overseas?target=evil", {}, 405],
+    ["/krill-lines/overseas", { method: "POST" }, 405],
+    ["/krill-lines/overseas", { headers: { Origin: "https://evil.example" } }, 403],
+    ["/krill-lines/overseas", { headers: { Origin: origin.replace("http:", "https:") } }, 403],
+    ["/krill-account/api/tokens", { headers: { Authorization: "Bearer private" } }, 405],
+  ]) assert.equal((await fetch(origin + route, options)).status, status);
+  for (const [route, headers, status] of [
+    ["/krill-lines/overseas", { Host: "evil.example" }, 421],
+    ["/krill-lines/overseas?", {}, 405],
+  ]) {
+    const actual = await new Promise((resolve, reject) => {
+      const request = http.get(origin, { path: route, headers }, (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      });
+      request.on("error", reject);
+    });
+    assert.equal(actual, status);
+  }
+  assert.equal(calls.length, 3);
+});
+
+test("line probe redirects and network failures are safe", async (t) => {
+  for (const [status, fault] of [[302, null], [200, "network"]]) {
+    const { origin, calls } = await fixture(t, "private credential", status, fault);
+    const response = await fetch(origin + "/krill-lines/overseas");
+    assert.equal(response.status, 502);
+    assert.doesNotMatch(await response.text(), /private credential/);
+    assert.equal(calls.length, 1);
+  }
 });

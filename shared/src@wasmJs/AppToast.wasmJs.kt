@@ -17,14 +17,13 @@ internal actual fun rememberAppToast(): (String) -> Unit = remember {
             (document.getElementById("krill-toast")
                 ?: document.createElement("div").also {
                     it.id = "krill-toast"
+                    it.className = "krill-toast"
                     it.setAttribute("role", "status")
                     it.setAttribute("aria-live", "polite")
                     document.body?.appendChild(it)
                 })
                 as HTMLElement
         toast.textContent = message
-        toast.style.cssText =
-            "position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:min(480px,85vw);padding:14px 20px;border-radius:16px;background:#102d3a;color:#fff;box-shadow:0 8px 32px #001c2b33;font:14px/1.5 system-ui,sans-serif;z-index:9999;pointer-events:none;"
         toastTimeout =
             window.setTimeout(
                 {

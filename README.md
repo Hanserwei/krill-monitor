@@ -10,9 +10,9 @@ Krill Monitor 是使用 Kotlin Multiplatform 和 Compose Multiplatform 开发的
 | 钱包、赠金及多份套餐 | ✓ | ✓ |
 | 最近 7 / 30 天费用、请求、失败数、Token 和模型排行 | ✓ | ✓ |
 | 匿名线路探测与公开渠道状态 | ✓ | ✓ |
-| API Key 创建、重命名、轮换、撤销、永久删除与渠道配置 | ✓ | 暂不支持 |
+| API Key 创建、重命名、轮换、撤销、永久删除与渠道配置 | ✓ | 密钥入口引导使用 Android 或 [官网](https://www.krill-code.com/)；未启用浏览器密钥库 |
 
-线路页匿名探测三条线路的 `/v1/models`，并展示官网公开状态，包括按渠道分组的模型、最近 24 小时历史和可用的性能数据；公开请求不携带账号 JWT，不发送模型推理请求。缺失的性能数据显示为未知。线路延迟不等于模型首 Token 时间（TTFT）。统计日期使用北京时间 UTC+8。
+线路页匿名探测三条线路的 `/v1/models`，并展示官网公开状态，包括按渠道分组的模型、最近 24 小时历史和可用的性能数据；公开请求不携带账号 JWT，不发送模型推理请求。Web 延迟包含浏览器到本机同源代理、再到线路上游的往返开销；Android 直接探测线路。缺失的性能数据显示为未知。线路延迟不等于模型首 Token 时间（TTFT）。统计日期使用北京时间 UTC+8。
 
 Android Key 管理支持渠道多选、默认配置、倍率及互斥规则。新建 Key 加密保存后，可先保存渠道配置或跳过，再通过系统认证查看；每次查看或复制都需要强生物识别或设备 PIN 等系统认证。官网已有 Key 若未在本机保存副本，无法找回完整值。
 
@@ -24,7 +24,7 @@ Android Key 管理支持渠道多选、默认配置、倍率及互斥规则。�
 
 ## 本地运行与构建
 
-需要 JDK 25、Android SDK 37（平台包名 `platforms;android-37.0`）和 Build Tools 37.0.0；Web 本地代理需要 Node.js 22。根目录的 `kotlin` / `kotlin.bat` 使用固定的 Kotlin Toolchain 0.13.0，并自动下载对应 SDK 包。
+需要 JDK 25、Android SDK 37（平台包名 `platforms;android-37.0`）和 Build Tools 37.0.0；Web 本地代理需要 Node.js 26.13.0 LTS，版本由 `.node-version` 固定。使用 fnm 时可在项目目录运行 `fnm install` 和 `fnm use`。根目录的 `kotlin` / `kotlin.bat` 使用固定的 Kotlin Toolchain 0.13.0，并自动下载对应 SDK 包。
 
 ```sh
 # Android：连接设备或启动模拟器

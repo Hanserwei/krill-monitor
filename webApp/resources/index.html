@@ -2,21 +2,26 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#102D3A">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#F4FBFB" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0D1515" media="(prefers-color-scheme: dark)">
+    <meta name="description" content="Krill Monitor 工作台，管理账户并查看使用情况。">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <title>Krill Monitor</title>
+    <title>Krill Monitor 工作台</title>
     <link type="text/css" rel="stylesheet" href="styles.css">
 </head>
-<body style="text-align: center; align-content: center">
-<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 50 50" role="presentation">
-    <circle cx="25" cy="25" r="20" stroke="#ccc" stroke-width="4" fill="none"/>
-    <circle cx="25" cy="25" r="20" stroke="#333" stroke-width="4" fill="none" stroke-linecap="round"
-            stroke-dasharray="90 125">
-        <animateTransform attributeName="transform" type="rotate" from="0 25 25" to="360 25 25" dur="1s"
-                          repeatCount="indefinite"/>
-    </circle>
-</svg>
+<body>
+<div id="krill-app"></div>
+<div id="krill-loading" class="loading-shell" role="status" aria-live="polite">
+    <div class="loading-content">
+        <img class="loading-logo" src="favicon.svg" width="64" height="64" alt="">
+        <h1>Krill Monitor</h1>
+        <p>正在加载工作台</p>
+        <div class="loading-progress" aria-hidden="true"><div></div></div>
+        <noscript><p>请启用 JavaScript 后使用 Krill Monitor。</p></noscript>
+    </div>
+</div>
 {{kotlin.scripts}}
 </body>
 </html>

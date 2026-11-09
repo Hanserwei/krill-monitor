@@ -67,4 +67,22 @@ class LineProberTest {
         assertFailsWith<CancellationException> { prober.probeLines() }
         prober.close()
     }
+
+    @Test
+    fun webProbeUsesOnlyTheConfiguredAnonymousRelayPaths() = runTest {
+        val paths = mutableSetOf<String>()
+        val prober = LineProber(
+            HttpClient(MockEngine { request ->
+                paths += request.url.encodedPath
+                assertEquals("localhost", request.url.host)
+                assertNull(request.headers[HttpHeaders.Authorization])
+                assertNull(request.headers[HttpHeaders.Cookie])
+                respond("", HttpStatusCode.Unauthorized)
+            }),
+            probeUrl = { "http://localhost/krill-lines/" + it.name.lowercase() },
+        )
+        assertTrue(prober.probeLines().all { it.reachable })
+        assertEquals(setOf("/krill-lines/overseas", "/krill-lines/china", "/krill-lines/cdn"), paths)
+        prober.close()
+    }
 }

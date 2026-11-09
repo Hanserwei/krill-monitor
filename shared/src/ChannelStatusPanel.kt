@@ -112,11 +112,11 @@ internal fun ChannelStatusPanel(
                                 leadingContent = {
                                     Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
                                         Box(contentAlignment = Alignment.Center) {
-                                            MonitorIcon(if (status == 1) "check_circle" else "error_outline", contentDescription = channelStatusText(status), tint = if (status == null) MaterialTheme.colorScheme.onPrimaryContainer else statusColor(status), modifier = Modifier.size(22.dp))
+                                            MonitorIcon(if (status == 1) "check_circle" else "error_outline", tint = if (status == null) MaterialTheme.colorScheme.onPrimaryContainer else statusColor(status), modifier = Modifier.size(22.dp))
                                         }
                                     }
                                 },
-                                trailingContent = { MonitorIcon(if (expanded) "expand_less" else "expand_more", contentDescription = if (expanded) "收起" else "展开") },
+                                trailingContent = { MonitorIcon(if (expanded) "expand_less" else "expand_more") },
                             )
                             if (expanded) Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                                 entries.forEach { entry ->

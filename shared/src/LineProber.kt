@@ -23,7 +23,10 @@ fun defaultMonitorHttpClient() = platformMonitorHttpClient {
 }
 
 /** 只探测固定线路的 HTTP 可达性，不接收或发送任何登录凭据。 */
-class LineProber(private val http: HttpClient = defaultMonitorHttpClient()) {
+class LineProber(
+    private val http: HttpClient = defaultMonitorHttpClient(),
+    private val probeUrl: (RelayLine) -> String = { it.origin + "/v1/models" },
+) {
     suspend fun probeLines(): List<LineHealth> = coroutineScope {
         RelayLine.entries.map { line -> async { probe(line) } }.awaitAll()
     }
@@ -33,7 +36,7 @@ class LineProber(private val http: HttpClient = defaultMonitorHttpClient()) {
     private suspend fun probe(line: RelayLine): LineHealth {
         val start = TimeSource.Monotonic.markNow()
         return try {
-            val status = http.prepareGet(line.origin + "/v1/models").execute { it.status.value }
+            val status = http.prepareGet(probeUrl(line)).execute { it.status.value }
             val reachable = status == 200 || status == 401
             LineHealth(
                 line,
