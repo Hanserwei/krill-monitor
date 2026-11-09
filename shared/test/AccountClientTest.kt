@@ -219,6 +219,58 @@ class AccountClientTest {
     }
 
     @Test
+    fun subscriptionAcquisitionDoesNotInventAMonthlyQuotaWindow() = runTest {
+        val items = """[
+            {"plan":{"billing_type":"usd_weekly","duration_days":30},
+             "subscription_start_at":"2026-10-31T02:34:05.040307Z",
+             "subscription_end_at":"2026-11-30T02:34:05.040307Z",
+             "quota":{"daily_limit_usd":585,"used_usd":300.27,
+                      "window_start_at":"2026-11-07T00:00:00+08:00",
+                      "window_reset_at":"2026-11-14T00:00:00+08:00"},
+             "total_limit_usd":2925,"total_remaining_usd":1454.73},
+            {"plan":{"billing_type":"usd_monthly"},
+             "subscription_start_at":"2026-10-31T10:34:05",
+             "quota":{"window_start_at":"2026-11-01T00:00:00+08:00",
+                      "window_reset_at":"2026-12-01T00:00:00+08:00"}},
+            {"plan":{"billing_type":"usd_daily"},"subscription_start_at":"invalid","subscription_end_at":null},
+            {"plan":{"billing_type":"usd_daily"}}
+        ]"""
+        val client = AccountClient(
+            HttpClient(MockEngine { request ->
+                respond(envelope(when (request.url.encodedPath) {
+                    "/api/auth/me" -> user
+                    "/api/subscription" -> """{"subscriptions":$items}"""
+                    "/api/credits" -> "{}"
+                    "/api/request-logs/model-stats" -> models
+                    else -> stats
+                }))
+            }),
+            now = { initial },
+        )
+        try {
+            val subscriptions = client.load(AccountSession("test-session", null)).subscriptions
+            val weekly = subscriptions[0]
+            assertEquals(Instant.parse("2026-10-31T02:34:05.040307Z"), weekly.startsAt)
+            assertEquals("2026-10-31 10:34:05 UTC+8", weekly.startsAt?.let(::beijingTimeText))
+            assertEquals(Instant.parse("2026-11-30T02:34:05.040307Z"), weekly.expiresAt)
+            assertEquals(Instant.parse("2026-11-06T16:00:00Z"), weekly.quotas.first().startsAt)
+            assertEquals("2026-11-13 23:59:59 UTC+8", quotaWindowEnd(weekly.quotas.first().resetsAt, weekly.expiresAt)?.let(::beijingTimeText))
+            assertNull(weekly.quotas.last().startsAt)
+            assertNull(weekly.quotas.last().resetsAt)
+            val monthly = subscriptions[1]
+            assertEquals(Instant.parse("2026-10-31T02:34:05Z"), monthly.startsAt)
+            assertEquals(Instant.parse("2026-10-31T16:00:00Z"), monthly.quotas.single().startsAt)
+            assertEquals(Instant.parse("2026-11-30T16:00:00Z"), monthly.quotas.single().resetsAt)
+            subscriptions.drop(2).forEach {
+                assertNull(it.startsAt)
+                assertNull(it.expiresAt)
+            }
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun refreshRespectsAccountRateLimitAndReturnsStaleCache() = runTest {
         var limited = false
         var calls = 0

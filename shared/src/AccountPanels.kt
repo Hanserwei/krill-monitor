@@ -382,7 +382,8 @@ internal fun AccountSubscriptions(data: AccountDashboard, wide: Boolean = false)
                             Text(status, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall)
                         }
                     }
-                    Text("到期：${subscription.expiresAt?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                    Text("获得时间：${subscription.startsAt?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                    Text("到期时间：${subscription.expiresAt?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
                     if (subscription.quotas.isEmpty()) Text("周期额度：—", style = MaterialTheme.typography.bodyMedium)
                     subscription.quotas.forEach { quota ->
                         fun amount(value: Double?): String = quotaValueText(value, quota.unit)
@@ -397,8 +398,10 @@ internal fun AccountSubscriptions(data: AccountDashboard, wide: Boolean = false)
                             Text("进度：—", style = MaterialTheme.typography.bodySmall)
                         }
                         if (remaining && quota.used != null) Text("累计消耗 ${amount(quota.used)}", style = MaterialTheme.typography.bodySmall)
-                        Text("周期开始：${quota.startsAt?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
-                        Text("周期结束：${quotaWindowEnd(quota.resetsAt, subscription.expiresAt)?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                        if (quota.startsAt != null || quota.resetsAt != null) {
+                            Text("周期开始：${quota.startsAt?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                            Text("周期结束：${quotaWindowEnd(quota.resetsAt, subscription.expiresAt)?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }

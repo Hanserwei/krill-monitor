@@ -735,6 +735,7 @@ private fun parseSubscriptions(
                     "used_usd",
                     "remaining_usd",
                     quota.instant("window_reset_at"),
+                    quota.instant("window_start_at"),
                 )
             else -> {
                 warnings += "部分套餐计费类型未识别，未推算额度"
@@ -756,6 +757,7 @@ private fun parseSubscriptions(
             item.text("status") ?: "未知",
             item.instant("subscription_end_at"),
             quotas,
+            startsAt = item.instant("subscription_start_at"),
         )
     }
 }
