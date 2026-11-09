@@ -446,7 +446,30 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
                                                     overview.warnings.distinct().forEach { message -> item { Notice(message, error = true) } }
                                                 } else if (!loading) item { Notice("暂时没有账户数据，请点击顶部刷新重试。") }
                                             } else if (destination == Page.Usage) {
-                                                item { UsagePanel(dashboards[days], days, onDaysChange = { days = it }, wide = columns) }
+                                                item {
+                                                    key(session) {
+                                                        val active = session
+                                                        val selectedDays = days
+                                                        val usageData = dashboards[selectedDays]
+                                                        UsagePanel(
+                                                            usageData,
+                                                            selectedDays,
+                                                            onDaysChange = { days = it },
+                                                            wide = columns,
+                                                            loadModelDetails = { model, refresh ->
+                                                                val signedIn = active ?: throw AccountSessionExpired()
+                                                                val rangeAt = usageData?.usage?.fetchedAt
+                                                                    ?: throw AccountAccessException("用量范围暂不可用，请先刷新用量")
+                                                                try {
+                                                                    accountApi.loadModelStatistics(signedIn, model, selectedDays, rangeAt, refresh)
+                                                                } catch (e: AccountSessionExpired) {
+                                                                    expireSession(signedIn)
+                                                                    throw e
+                                                                }
+                                                            },
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
                                     }

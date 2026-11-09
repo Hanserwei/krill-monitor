@@ -45,6 +45,15 @@ internal fun cacheRatioText(cached: Long?, input: Long?): String {
     return "${tenths / 10}.${tenths % 10}%"
 }
 
+internal fun accountCacheRatioText(statistics: AccountStatistics?): String {
+    val stats = statistics ?: return "—"
+    return if (stats.cacheRateReadTokens != null && stats.cacheRateEligibleTokens != null) {
+        cacheRatioText(stats.cacheRateReadTokens, stats.cacheRateEligibleTokens)
+    } else {
+        cacheRatioText(stats.cachedInputTokens, sumCounts(listOf(stats.inputTokens, stats.cacheWriteTokens, stats.cachedInputTokens)))
+    }
+}
+
 internal fun beijingTimeText(instant: Instant): String =
     Instant.fromEpochSeconds(instant.epochSeconds + 8 * 3600)
         .toString()

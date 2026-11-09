@@ -24,17 +24,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlin.time.Instant
 
 internal fun sortedUsageModels(models: List<ModelUsage>, byTokens: Boolean): List<ModelUsage> =
     if (byTokens) models.sortedWith(compareByDescending { it.totalTokens?.takeIf { value -> value >= 0 } })
     else models.sortedWith(compareByDescending { chartCost(it.costUsd) })
 
 @Composable
-internal fun UsagePanel(data: AccountDashboard?, days: Int, onDaysChange: (Int) -> Unit, wide: Boolean = false) {
+internal fun UsagePanel(data: AccountDashboard?, days: Int, onDaysChange: (Int) -> Unit, wide: Boolean = false, loadModelDetails: suspend (model: String, refresh: Boolean) -> ModelStatisticsReport) {
     val usage = data?.usage
     var selectedDate by remember(usage, days) { mutableStateOf<String?>(null) }
     var byTokens by rememberSaveable { mutableStateOf(false) }
-    var expanded by remember(usage, days) { mutableStateOf<Set<Int>>(emptySet()) }
+    var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
     val daily = remember(usage, days) { usage?.daily?.takeLast(days) ?: emptyList() }
     val selected = daily.firstOrNull { it.date == selectedDate }
     val models = remember(usage, byTokens) { sortedUsageModels(usage?.models ?: emptyList(), byTokens) }
@@ -55,7 +59,7 @@ internal fun UsagePanel(data: AccountDashboard?, days: Int, onDaysChange: (Int) 
                     Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("Token 缓存与推理", style = MaterialTheme.typography.titleMedium)
                         Text("缓存读取 ${countText(stats?.cachedInputTokens)} · 缓存写入 ${countText(stats?.cacheWriteTokens)}", style = MaterialTheme.typography.bodyMedium)
-                        Text("推理 ${countText(stats?.reasoningTokens)} · 缓存占输入 ${cacheRatioText(stats?.cachedInputTokens, stats?.inputTokens)}", style = MaterialTheme.typography.bodyMedium)
+                        Text("推理 ${countText(stats?.reasoningTokens)} · 缓存占比 ${accountCacheRatioText(stats)}", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -137,20 +141,19 @@ internal fun UsagePanel(data: AccountDashboard?, days: Int, onDaysChange: (Int) 
                         } else {
                             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 models.forEachIndexed { index, model ->
-                                    val interaction = remember(index, model) { MutableInteractionSource() }
-                                    Column(Modifier.fillMaxWidth().clip(groupedShape(index, models.size)).background(MaterialTheme.colorScheme.surfaceContainerLow).animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec())) {
-                                        ListItem(
-                                            modifier = Modifier.pressScale(interaction).semantics { stateDescription = if (index in expanded) "已展开" else "已收起" }.clickable(interactionSource = interaction, indication = ripple()) { expanded = if (index in expanded) expanded - index else expanded + index },
-                                            colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                                            leadingContent = { Box(Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) { MonitorIcon("auto_awesome", tint = MaterialTheme.colorScheme.onPrimaryContainer) } },
-                                            headlineContent = { Text(model.model) },
-                                            supportingContent = { Text("${usdText(model.costUsd)} · 请求 ${countText(model.requests)} · Token ${compactCount(model.totalTokens)}") },
-                                            trailingContent = { MonitorIcon(if (index in expanded) "expand_less" else "expand_more") },
-                                        )
-                                        if (index in expanded) {
-                                            Column(Modifier.padding(start = 72.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text("输入 ${countText(model.inputTokens)} · 输出 ${countText(model.outputTokens)}", style = MaterialTheme.typography.bodySmall)
-                                                Text("缓存命中 ${countText(model.cachedInputTokens)} · 占输入 ${cacheRatioText(model.cachedInputTokens, model.inputTokens)}", style = MaterialTheme.typography.bodySmall)
+                                    key(model.model) {
+                                        val interaction = remember(model.model) { MutableInteractionSource() }
+                                        Column(Modifier.fillMaxWidth().clip(groupedShape(index, models.size)).background(MaterialTheme.colorScheme.surfaceContainerLow).animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec())) {
+                                            ListItem(
+                                                modifier = Modifier.pressScale(interaction).semantics { stateDescription = if (model.model in expanded) "已展开" else "已收起" }.clickable(interactionSource = interaction, indication = ripple()) { expanded = if (model.model in expanded) expanded - model.model else expanded + model.model },
+                                                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                                                leadingContent = { Box(Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) { MonitorIcon("auto_awesome", tint = MaterialTheme.colorScheme.onPrimaryContainer) } },
+                                                headlineContent = { Text(model.model) },
+                                                supportingContent = { Text("${usdText(model.costUsd)} · 请求 ${countText(model.requests)} · Token ${compactCount(model.totalTokens)}") },
+                                                trailingContent = { MonitorIcon(if (model.model in expanded) "expand_less" else "expand_more") },
+                                            )
+                                            if (model.model in expanded) {
+                                                ModelUsageDetails(model.model, days, usage.fetchedAt, loadModelDetails)
                                             }
                                         }
                                     }
@@ -174,6 +177,61 @@ internal fun UsagePanel(data: AccountDashboard?, days: Int, onDaysChange: (Int) 
                 }
             }
 
+        }
+    }
+}
+
+@Composable
+private fun ModelUsageDetails(
+    model: String,
+    days: Int,
+    fetchedAt: Instant,
+    loader: suspend (String, Boolean) -> ModelStatisticsReport,
+) {
+    var report by remember(model, days, fetchedAt) { mutableStateOf<ModelStatisticsReport?>(null) }
+    var error by remember(model, days, fetchedAt) { mutableStateOf<String?>(null) }
+    var loading by remember(model, days, fetchedAt) { mutableStateOf(true) }
+    var revision by remember(model, days, fetchedAt) { mutableIntStateOf(0) }
+    val currentLoader by rememberUpdatedState(loader)
+
+    LaunchedEffect(model, days, fetchedAt, revision) {
+        loading = true
+        error = null
+        try {
+            val result = currentLoader(model, revision > 0)
+            currentCoroutineContext().ensureActive()
+            report = result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: AccountSessionExpired) {
+            currentCoroutineContext().ensureActive()
+        } catch (_: Exception) {
+            currentCoroutineContext().ensureActive()
+            error = "模型明细查询失败，请稍后重试"
+        }
+        loading = false
+    }
+
+    Column(Modifier.padding(start = 72.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        report?.let { result ->
+            val stats = result.statistics
+            Text("输入 ${countText(stats.inputTokens)} · 输出 ${countText(stats.outputTokens)}", style = MaterialTheme.typography.bodySmall)
+            Text("缓存命中 ${countText(stats.cachedInputTokens)} · 缓存占比 ${accountCacheRatioText(stats)}", style = MaterialTheme.typography.bodySmall)
+            Text("缓存写入 ${countText(stats.cacheWriteTokens)} · 推理 ${countText(stats.reasoningTokens)}", style = MaterialTheme.typography.bodySmall)
+            if (listOf(stats.inputTokens, stats.outputTokens, stats.cachedInputTokens, stats.cacheWriteTokens, stats.reasoningTokens).any { it == null || it < 0 }) {
+                Text("部分明细未提供", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text("${if (result.stale) "过期缓存" else "明细时间"} · ${beijingTimeText(result.fetchedAt)}", style = MaterialTheme.typography.bodySmall, color = if (result.stale) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            result.warning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        }
+        error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        if (loading) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("正在查询该模型明细", style = MaterialTheme.typography.bodySmall)
+            }
+        } else if (report != null || error != null) {
+            TextButton(onClick = { revision++ }) { Text(if (report == null) "重试" else "刷新明细") }
         }
     }
 }

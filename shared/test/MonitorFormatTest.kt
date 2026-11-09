@@ -48,6 +48,23 @@ class MonitorFormatTest {
     }
 
     @Test
+    fun accountCacheRatioUsesOfficialEligibleInputAndSafeFallback() {
+        val stats = AccountStatistics(
+            requests = null, failedRequests = null, inputTokens = 100, outputTokens = 20,
+            cachedInputTokens = 900, cacheWriteTokens = 0, reasoningTokens = null,
+            totalTokens = null, costUsd = null, tps = null,
+        )
+        assertEquals("90.0%", accountCacheRatioText(stats))
+        assertEquals("50.0%", accountCacheRatioText(stats.copy(cacheRateReadTokens = 250, cacheRateEligibleTokens = 500)))
+        assertEquals("90.0%", accountCacheRatioText(stats.copy(cacheRateReadTokens = 250)))
+        assertEquals("—", accountCacheRatioText(stats.copy(cacheWriteTokens = null)))
+        assertEquals("—", accountCacheRatioText(stats.copy(inputTokens = Long.MAX_VALUE)))
+        assertEquals("—", accountCacheRatioText(stats.copy(cacheRateReadTokens = 501, cacheRateEligibleTokens = 500)))
+        assertEquals("—", accountCacheRatioText(stats.copy(cacheRateReadTokens = 0, cacheRateEligibleTokens = 0)))
+        assertEquals("—", accountCacheRatioText(null))
+    }
+
+    @Test
     fun timestampsUseBeijingTimeAndKeepSeconds() {
         assertEquals(
             "2027-01-01 07:59:59 UTC+8",

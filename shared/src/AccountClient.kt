@@ -31,6 +31,10 @@ class AccountClient(
     private var cachedSubscriptions: JsonObject? = null
     private val cachedStats = mutableMapOf<Int, Pair<Instant, JsonObject>>()
     private val cachedModels = mutableMapOf<Int, Pair<Instant, JsonObject>>()
+    private data class ModelCacheKey(val model: String, val days: Int, val date: String)
+    private val cachedModelStatistics = mutableMapOf<ModelCacheKey, ModelStatisticsReport>()
+    private val modelStatisticsLocks = mutableMapOf<ModelCacheKey, Mutex>()
+    private var cacheGeneration = 0L
     private val retries = mutableMapOf<String, Pair<Instant, String>>()
     private val codeSendLock = Mutex()
     private val keySecretLock = Mutex()
@@ -228,6 +232,63 @@ class AccountClient(
         }
     }
 
+    suspend fun loadModelStatistics(
+        session: AccountSession,
+        model: String,
+        days: Int,
+        rangeAt: Instant,
+        refresh: Boolean = false,
+    ): ModelStatisticsReport {
+        if (!safeCredential(session.token)) {
+            clearCache()
+            throw AccountSessionExpired()
+        }
+        if (days !in listOf(7, 30)) throw AccountAccessException("查询范围仅支持 7 或 30 天")
+        if (model.isBlank() || model.length > 512 || model.any { it.code < 32 || it.code in 127..159 })
+            throw AccountAccessException("模型名称无效")
+        if (cachedToken != session.token) {
+            clearCache()
+            cachedToken = session.token
+        }
+        val generation = cacheGeneration
+        val key = ModelCacheKey(model, days, beijingDate(rangeAt))
+        val lock = modelStatisticsLocks.getOrPut(key) { Mutex() }
+        if (!lock.tryLock()) throw AccountAccessException("模型统计查询进行中，请稍候")
+        try {
+            fun checkGeneration() {
+                if (generation != cacheGeneration || cachedToken != session.token) throw AccountSessionExpired()
+            }
+            try {
+                val me = request("/api/auth/me", session.token)
+                checkGeneration()
+                validateUser(me)
+                val old = cachedModelStatistics[key]
+                if (!refresh && old != null && !old.stale && old.fetchedAt >= rangeAt &&
+                    now().epochSeconds - old.fetchedAt.epochSeconds in 0 until 300)
+                    return old
+                val body = buildJsonObject {
+                    accountRange(rangeAt, days).forEach { (name, value) -> put(name, value) }
+                    put("model", model)
+                }
+                val stats = request("/api/request-logs/stats", session.token, body)
+                checkGeneration()
+                return ModelStatisticsReport(parseAccountStatistics(stats), now()).also {
+                    cachedModelStatistics[key] = it
+                }
+            } catch (e: AccountAccessException) {
+                checkGeneration()
+                if (!e.transient) throw e
+                val old = cachedModelStatistics[key] ?: throw e
+                return old.copy(stale = true, warning = "模型统计查询失败，显示上次成功数据；请稍后重试").also {
+                    cachedModelStatistics[key] = it
+                }
+            }
+        } finally {
+            lock.unlock()
+            if (modelStatisticsLocks[key] === lock) modelStatisticsLocks.remove(key)
+        }
+    }
+
     suspend fun listApiKeys(session: AccountSession): ManagedKeyList {
         checkKeySession(session)
         val user = request("/api/auth/me", session.token)
@@ -409,6 +470,9 @@ class AccountClient(
     }
 
     private fun clearCache() {
+        cacheGeneration++
+        cachedModelStatistics.clear()
+        modelStatisticsLocks.clear()
         cachedToken = null
         cached.clear()
         cachedWallet = null
@@ -471,10 +535,11 @@ class AccountClient(
         uncertain: Boolean = false,
     ): JsonElement {
         var definiteFailure = false
+        val requestGeneration = cacheGeneration
         val retryKey = if (token == null) path else "account"
         retries[retryKey]
             ?.takeIf { it.first > now() }
-            ?.let { throw AccountAccessException(it.second) }
+            ?.let { throw AccountAccessException(it.second, transient = token != null) }
         try {
             return http
                 .prepareRequest(baseUrl.trimEnd('/') + path) {
@@ -544,8 +609,9 @@ class AccountClient(
                             Instant.fromEpochSeconds(
                                 now().epochSeconds + (headerWait ?: 60L).coerceAtMost(maximumWait)
                             )
-                        retries[retryKey] = retryAt to retryMessage
-                        throw AccountAccessException(retryMessage)
+                        if (requestGeneration == cacheGeneration && (token == null || cachedToken == null || cachedToken == token))
+                            retries[retryKey] = retryAt to retryMessage
+                        throw AccountAccessException(retryMessage, transient = token != null)
                     }
                     if (status == 403) {
                         definiteFailure = true
@@ -559,7 +625,8 @@ class AccountClient(
                     }
                     if (path == "/api/auth/login/verify" && status in listOf(400, 422))
                         throw AccountAccessException("邮箱验证码校验未通过，请检查邮箱和验证码，或重新获取")
-                    if (status !in 200..299) throw AccountAccessException("账号接口暂不可用（HTTP $status）")
+                    if (status !in 200..299)
+                        throw AccountAccessException("账号接口暂不可用（HTTP $status）", transient = status in 500..599)
                     if (allowEmpty && root == null && bufferWasEmpty) return@execute JsonNull
                     if ((root?.get("success") as? JsonPrimitive)?.booleanOrNull != true)
                         throw AccountAccessException("账号请求未成功，请检查输入或到官网确认账户状态")
@@ -571,7 +638,7 @@ class AccountClient(
         } catch (e: CancellationException) {
             throw e
         } catch (e: AccountSessionExpired) {
-            if (token != null) clearCache()
+            if (token != null && requestGeneration == cacheGeneration && (cachedToken == null || cachedToken == token)) clearCache()
             throw e
         } catch (e: AccountAccessException) {
             if (uncertain && !definiteFailure)
@@ -579,7 +646,7 @@ class AccountClient(
             throw e
         } catch (_: Throwable) {
             if (uncertain) throw AccountAccessException("Key 操作可能已生效，但无法确认新 Key；请先刷新列表，勿重复创建或轮换")
-            throw AccountAccessException("无法连接账号服务，请检查网络后重试。")
+            throw AccountAccessException("无法连接账号服务，请检查网络后重试。", transient = true)
         }
     }
 }
@@ -637,6 +704,8 @@ private fun parseAccountStatistics(stats: JsonObject) =
         stats.count("total_tokens"),
         stats.amount("total_cost_usd"),
         stats.amount("overall_tps"),
+        stats.count("cache_rate_read_tokens"),
+        stats.count("cache_rate_eligible_tokens"),
     )
 
 private fun parseSubscriptions(
@@ -837,7 +906,7 @@ private fun parseAccountUsage(
         modelRows,
         time,
         warnings = warnings,
-        costNote = "费用来自官网请求日志统计；每日及模型接口仅提供总 Token，细分 Token 见汇总",
+        costNote = "费用来自官网请求日志统计；模型排行仅提供总 Token，展开后按需查询细分，日级统计未提供细分",
         timezone = "UTC+8",
     )
 }

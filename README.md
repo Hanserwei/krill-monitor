@@ -50,10 +50,10 @@ Android 调试 APK 位于 `build/tasks/_androidApp_buildAndroidDebug/gradle-proj
 签名密钥不得提交仓库；在用户工作区外安全保存 PKCS#12 密钥库，固定别名为 `krill-monitor`，密钥库密码和密钥密码相同。设置 `ANDROID_HOME`、`ANDROID_KEYSTORE_PATH` 和 `ANDROID_KEYSTORE_PASSWORD` 后运行：
 
 ```sh
-./tools/release-apk.sh v0.2.2
+./tools/release-apk.sh v0.2.3
 ```
 
-脚本在 `dist/` 生成 `krill-monitor-0.2.2.apk`、`SHA256SUMS` 和 `ANDROID-SIGNING-CERT.txt`。保管好密钥库及密码，后续版本必须使用相同签名才能覆盖升级。
+脚本在 `dist/` 生成 `krill-monitor-0.2.3.apk`、`SHA256SUMS` 和 `ANDROID-SIGNING-CERT.txt`。保管好密钥库及密码，后续版本必须使用相同签名才能覆盖升级。
 
 GitHub Actions 对推送 `master`、Pull Request 和标签运行检查。发布前在仓库 Secrets 配置 `ANDROID_KEYSTORE_BASE64`（PKCS#12 文件的 Base64）和 `ANDROID_KEYSTORE_PASSWORD`；推送 `v*` 标签后，检查通过的发布流程签名 APK，使用 `docs/releases/<标签>.md` 创建 GitHub Release。发布新版本前应更新版本号、versionCode 和对应发行说明。
 

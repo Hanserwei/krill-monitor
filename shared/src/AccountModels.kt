@@ -35,7 +35,7 @@ data class EmailCodeDispatch(val resendAfterSeconds: Long?)
 
 class AccountSessionExpired : Exception("登录已过期，请重新登录")
 
-class AccountAccessException(message: String) : Exception(message)
+class AccountAccessException(message: String, internal val transient: Boolean = false) : Exception(message)
 
 data class AccountQuota(
     val label: String,
@@ -66,6 +66,15 @@ data class AccountStatistics(
     val totalTokens: Long?,
     val costUsd: Double?,
     val tps: Double?,
+    val cacheRateReadTokens: Long? = null,
+    val cacheRateEligibleTokens: Long? = null,
+)
+
+data class ModelStatisticsReport(
+    val statistics: AccountStatistics,
+    val fetchedAt: Instant,
+    val stale: Boolean = false,
+    val warning: String? = null,
 )
 
 data class AccountDashboard(
