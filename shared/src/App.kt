@@ -446,7 +446,7 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
                                                     overview.warnings.distinct().forEach { message -> item { Notice(message, error = true) } }
                                                 } else if (!loading) item { Notice("暂时没有账户数据，请点击顶部刷新重试。") }
                                             } else if (destination == Page.Usage) {
-                                                item {
+                                                item(key = "usage") {
                                                     key(session) {
                                                         val active = session
                                                         val selectedDays = days
