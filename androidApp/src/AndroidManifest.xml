@@ -12,7 +12,9 @@
             android:roundIcon="@mipmap/ic_launcher_round"
             android:supportsRtl="true"
             android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- Compose handles display changes without discarding sessions or pending key operations. -->
         <activity
+                android:configChanges="uiMode|fontScale|orientation|screenSize|screenLayout|smallestScreenSize|density"
                 android:exported="true"
                 android:name=".MainActivity">
             <intent-filter>

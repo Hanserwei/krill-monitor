@@ -5,6 +5,7 @@
 - **Noto Sans CJK SC**：Copyright 2014–2021 Adobe（http://www.adobe.com/），采用 SIL Open Font License 1.1。随附字体及完整版权和许可文本见 [NotoSansCJK-LICENSE.txt](shared/composeResources/files/NotoSansCJK-LICENSE.txt)，字体来源：[Noto CJK](https://github.com/notofonts/noto-cjk)。
 - **Kotlin Toolchain wrapper**（`kotlin`、`kotlin.bat`）：Copyright 2000–2026 JetBrains s.r.o.，Apache License 2.0。[来源](https://github.com/JetBrains/kotlin-toolchain)。
 - **Compose Multiplatform、Kotlin、Ktor、AndroidX、kotlinx、OkHttp、Okio**：相关组件采用 Apache License 2.0。来源分别为 [Compose Multiplatform](https://github.com/JetBrains/compose-multiplatform)、[Kotlin](https://github.com/JetBrains/kotlin)、[Ktor](https://github.com/ktorio/ktor)、[AndroidX](https://github.com/androidx/androidx)、[kotlinx](https://github.com/Kotlin)、[OkHttp](https://github.com/square/okhttp) 和 [Okio](https://github.com/square/okio)。
+- **Material Symbols Rounded**：Google，Apache License 2.0。图标来源：[Google Material Design Icons](https://github.com/google/material-design-icons)。
 - **原 Compose Multiplatform 模板图标**：JetBrains，Apache License 2.0。[来源](https://github.com/JetBrains/compose-multiplatform)。
 
 Apache License 2.0 的完整文本见 [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt)；各组件还可能包含其自身的版权、NOTICE 或其他适用声明，请参阅各上游项目。

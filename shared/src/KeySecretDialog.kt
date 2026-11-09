@@ -85,10 +85,12 @@ internal fun KeySecretDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onCopy, enabled = !busy) {
+            Button(onClick = onCopy, enabled = !busy, modifier = Modifier.heightIn(min = 56.dp)) {
+                MonitorIcon("content_copy")
+                Spacer(Modifier.width(8.dp))
                 Text(if (busy) "正在验证…" else "认证并复制")
             }
         },
-        dismissButton = { TextButton(onClick = onClose) { Text("关闭") } },
+        dismissButton = { TextButton(onClick = onClose, modifier = Modifier.heightIn(min = 56.dp)) { Text("关闭") } },
     )
 }

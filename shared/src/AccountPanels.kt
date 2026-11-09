@@ -1,5 +1,7 @@
 package com.hanserwei.krill_monitor
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -7,7 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -15,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -70,7 +73,7 @@ internal fun AccountLoginPanel(
                 Text("退出登录")
             }
         } else {
-            Text(if (pending == null) "使用 Krill 官网邮箱登录。" else "输入身份验证器中的 6 位动态验证码。")
+            Text(if (pending == null) "尚未登录，使用 Krill 官网邮箱登录以查看账户信息。" else "输入身份验证器中的 6 位动态验证码。")
             if (pending == null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -93,6 +96,7 @@ internal fun AccountLoginPanel(
                         },
                         enabled = !busy,
                         label = { Text("邮箱验证码") },
+                        leadingIcon = { if (useEmailCode) MonitorIcon("check") else MonitorIcon("mail") },
                     )
                     FilterChip(
                         modifier = Modifier.weight(1f),
@@ -111,6 +115,7 @@ internal fun AccountLoginPanel(
                         },
                         enabled = !busy,
                         label = { Text("密码") },
+                        leadingIcon = { if (!useEmailCode) MonitorIcon("check") else MonitorIcon("lock") },
                     )
                 }
                 OutlinedTextField(
@@ -124,7 +129,7 @@ internal fun AccountLoginPanel(
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "账号邮箱" },
                     label = { Text("邮箱") },
                     singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(16.dp),
                     enabled = !busy,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                 )
@@ -136,11 +141,12 @@ internal fun AccountLoginPanel(
                             Modifier.fillMaxWidth().semantics { contentDescription = "邮箱验证码" },
                         label = { Text("邮箱验证码") },
                         singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(16.dp),
                         enabled = !busy,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     )
                     OutlinedButton(
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                         enabled =
                             !busy &&
                                 address.isNotBlank() &&
@@ -195,7 +201,7 @@ internal fun AccountLoginPanel(
                             Modifier.fillMaxWidth().semantics { contentDescription = "账号密码" },
                         label = { Text("密码") },
                         singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(16.dp),
                         enabled = !busy,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -208,12 +214,12 @@ internal fun AccountLoginPanel(
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "动态验证码" },
                     label = { Text("动态验证码") },
                     singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(16.dp),
                     enabled = !busy,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                 )
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(
                     checked = rememberLogin,
                     onCheckedChange = { rememberLogin = it },
@@ -229,6 +235,7 @@ internal fun AccountLoginPanel(
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
+                    modifier = Modifier.weight(1f).heightIn(min = 56.dp),
                     enabled =
                         !busy &&
                             if (pending != null) totpCode.length == 6
@@ -293,188 +300,149 @@ internal fun AccountLoginPanel(
         TextButton(onClick = { uriHandler.openUri("https://www.krill-code.com/login") }) {
             Text("打开 Krill 官网")
         }
+        Text("第三方非官方客户端，与 Krill 官方无隶属关系。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-internal fun AccountOverview(data: AccountDashboard, days: Int) {
-    Panel("钱包与统计") {
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-            color = Color(0xFF102D42),
-            contentColor = Color.White,
-        ) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("钱包余额", style = MaterialTheme.typography.labelLarge, color = Color(0xFF9DDCD4))
-                Text(
-                    usdText(data.balanceUsd),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                )
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = Color(0xFF205D60),
-                    contentColor = Color.White,
-                ) {
-                    Text(
-                        "赠金 ${usdText(data.welfareUsd)}",
-                        Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
+internal fun AccountOverview(data: AccountDashboard, days: Int, onUsage: () -> Unit = {}) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("钱包余额 · USD", style = MaterialTheme.typography.bodyMedium)
+                Text(usdText(data.balanceUsd), style = MaterialTheme.typography.displayLarge.copy(fontSize = 48.sp), fontWeight = FontWeight.SemiBold)
+                Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                    Row(Modifier.heightIn(min = 32.dp).padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MonitorIcon("redeem", modifier = Modifier.size(18.dp))
+                        Text("赠金 ${usdText(data.welfareUsd)}", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
         }
         val stats = data.statistics
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AccountStatTile("近${days}天费用", usdText(stats?.costUsd), Modifier.weight(1f))
-                AccountStatTile("请求", countText(stats?.requests), Modifier.weight(1f))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AccountStatTile("失败请求", countText(stats?.failedRequests), Modifier.weight(1f))
-                AccountStatTile(
-                    "总 Token",
-                    compactCount(stats?.totalTokens),
-                    Modifier.weight(1f).semantics {
-                        contentDescription = "总 Token ${countText(stats?.totalTokens)}"
-                    },
-                )
-            }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AccountStatTile("近${days}天费用", usdText(stats?.costUsd), Modifier.weight(1f), onUsage)
+            AccountStatTile("请求", countText(stats?.requests), Modifier.weight(1f))
         }
-        data.usage
-            ?.takeIf { report -> report.daily.any { it.costUsd != null } }
-            ?.let { report ->
-                Text("近期费用趋势 · ${report.timezone}", style = MaterialTheme.typography.titleSmall)
-                SpendTrendChart(report.daily, compact = true)
-            }
-        stats?.let {
-            Text("Token 用量", style = MaterialTheme.typography.titleSmall)
-            TokenVolumeChart(it)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AccountStatTile("失败请求", countText(stats?.failedRequests), Modifier.weight(1f))
+            AccountStatTile("总 Token", compactCount(stats?.totalTokens), Modifier.weight(1f).semantics { contentDescription = "总 Token ${countText(stats?.totalTokens)}" })
         }
-        Text(
-            "官网账号统计 · 北京时间 UTC+8 · 钱包与套餐额度独立",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Text("官网账号统计 · 北京时间 UTC+8 · 钱包与套餐额度独立", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun AccountStatTile(label: String, value: String, modifier: Modifier = Modifier) {
-    Surface(
-        modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-    ) {
+private fun AccountStatTile(label: String, value: String, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    val interaction = remember { MutableInteractionSource() }
+    val click = if (onClick != null) Modifier.clickable(interactionSource = interaction, indication = null, onClick = onClick) else Modifier
+    Surface(modifier.heightIn(min = 88.dp), shape = RoundedCornerShape(20.dp), color = if (onClick != null) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                value,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                softWrap = true,
-            )
+            Text(label, style = MaterialTheme.typography.labelMedium.copy(fontSize = 14.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, modifier = click, style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp), fontWeight = FontWeight.SemiBold)
         }
     }
 }
 
 @Composable
 internal fun AccountSubscriptions(data: AccountDashboard) {
-    Panel("我的套餐") {
-        if (data.subscriptions.isEmpty())
-            Text(if (data.warnings.any { it.contains("套餐") }) "套餐信息暂不可用" else "当前没有套餐")
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("我的套餐", style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp), fontWeight = FontWeight.SemiBold)
+        if (data.subscriptions.isEmpty()) {
+            Text(if (data.warnings.any { it.contains("套餐") }) "套餐信息暂不可用" else "当前没有套餐", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         data.subscriptions.forEach { subscription ->
-            val status =
-                when (subscription.status) {
-                    "active" -> "生效中"
-                    "expired" -> "已到期"
-                    "frozen" -> "已冻结"
-                    else -> subscription.status
-                }
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-            ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            subscription.name,
-                            Modifier.weight(1f),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                        ) {
-                            Text(
-                                status,
-                                Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
+            val status = when (subscription.status) {
+                "active" -> "生效中"
+                "expired" -> "已到期"
+                "frozen" -> "已冻结"
+                else -> subscription.status.ifBlank { "—" }
+            }
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(subscription.name.ifBlank { "—" }, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp), fontWeight = FontWeight.SemiBold)
+                        Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer) {
+                            Text(status, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall)
                         }
                     }
-                    Text(
-                        "到期：${subscription.expiresAt?.let(::beijingTimeText) ?: "未提供"}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    Text("到期：${subscription.expiresAt?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                    if (subscription.quotas.isEmpty()) Text("周期额度：—", style = MaterialTheme.typography.bodyMedium)
                     subscription.quotas.forEach { quota ->
                         fun amount(value: Double?): String = quotaValueText(value, quota.unit)
                         val remaining = quota.unit != "次"
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            QuotaRing(
-                                if (remaining) quota.remaining else quota.used,
-                                quota.limit,
-                                Modifier.size(76.dp),
-                                remaining = remaining,
-                            )
-                            Column(
-                                Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(3.dp),
-                            ) {
-                                Text(
-                                    "${quota.label} · ${quota.unit}",
-                                    fontWeight = FontWeight.Medium,
-                                )
-                                Text(
-                                    "${if (remaining) "剩余" else "已用"} ${amount(if (remaining) quota.remaining else quota.used)} / ${amount(quota.limit)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                                if (remaining && quota.used != null)
-                                    Text(
-                                        "累计消耗 ${amount(quota.used)}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                            }
+                        val value = if (remaining) quota.remaining else quota.used
+                        Text("${quota.label} · ${quota.unit.ifBlank { "—" }}", fontWeight = FontWeight.Medium)
+                        Text("${if (remaining) "剩余" else "已用"} ${amount(value)} / ${amount(quota.limit)}", style = MaterialTheme.typography.headlineSmall)
+                        val limit = quota.limit
+                        if (value != null && value.isFinite() && value >= 0 && limit != null && limit.isFinite() && limit > 0) {
+                            LinearProgressIndicator(progress = { (value / limit).coerceIn(0.0, 1.0).toFloat() }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)), trackColor = MaterialTheme.colorScheme.secondaryContainer)
+                        } else {
+                            Text("进度：—", style = MaterialTheme.typography.bodySmall)
                         }
-                        quota.startsAt?.let {
-                            Text(
-                                "周期开始：${beijingTimeText(it)}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        quotaWindowEnd(quota.resetsAt, subscription.expiresAt)?.let {
-                            Text(
-                                "周期结束：${beijingTimeText(it)}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
+                        if (remaining && quota.used != null) Text("累计消耗 ${amount(quota.used)}", style = MaterialTheme.typography.bodySmall)
+                        Text("周期开始：${quota.startsAt?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                        Text("周期结束：${quotaWindowEnd(quota.resetsAt, subscription.expiresAt)?.let(::beijingTimeText) ?: "—"}", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
         }
+        Text("钱包与套餐额度独立", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+internal fun AccountSettingsPanel(email: String?, secureStorage: Boolean, onLogout: () -> Unit) {
+    var confirmLogout by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("当前账号", style = MaterialTheme.typography.labelLarge)
+                Text(email?.takeIf { it.isNotBlank() } ?: "—", style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp), fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    MonitorIcon("verified_user", modifier = Modifier.size(18.dp))
+                    Text("已登录", style = MaterialTheme.typography.labelMedium)
+                }
+                Text(if (secureStorage) "选择记住登录时，会话令牌在设备上加密保存。" else "选择记住登录时，会话令牌保存在浏览器本地，同源脚本可读取。", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Text("隐私与数据", style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp), fontWeight = FontWeight.SemiBold)
+        val details = listOf(
+            Triple("lock", "会话存储", if (secureStorage) "可在设备上加密保存会话令牌，不保存密码或验证码" else "可在浏览器本地保存会话令牌，同源脚本可读取；不保存密码或验证码"),
+            Triple("schedule", "统计时间与币种", "USD · 北京时间 UTC+8"),
+            Triple("account_balance_wallet", "账户额度", "钱包与套餐额度独立"),
+            Triple("shield", "匿名线路隐私", "匿名探测线路不携带账号凭据"),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            details.forEachIndexed { index, (icon, title, detail) ->
+                ListItem(
+                    modifier = Modifier.clip(groupedShape(index, details.size)),
+                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    headlineContent = { Text(title) },
+                    supportingContent = { Text(detail) },
+                    leadingContent = {
+                        Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
+                            Box(contentAlignment = Alignment.Center) { MonitorIcon(icon, modifier = Modifier.size(22.dp)) }
+                        }
+                    },
+                )
+            }
+        }
+        OutlinedButton(onClick = { confirmLogout = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+            MonitorIcon("logout", modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("退出登录")
+        }
+        Text("第三方非官方客户端，与 Krill 官方无隶属关系。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (confirmLogout) {
+        AlertDialog(
+            onDismissRequest = { confirmLogout = false },
+            title = { Text("退出登录？") },
+            text = { Text("仅清除本应用的会话。") },
+            confirmButton = { TextButton(onClick = { confirmLogout = false; onLogout() }) { Text("退出登录") } },
+            dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("取消") } },
+            shape = RoundedCornerShape(28.dp),
+        )
     }
 }

@@ -327,6 +327,169 @@ class AccountClientTest {
     }
 
     @Test
+    fun partialFailuresKeepOnlyTheMatchingSuccessfulData() = runTest {
+        var failedPath: String? = null
+        var unauthorizedPath: String? = null
+        val client = AccountClient(
+            HttpClient(MockEngine { request ->
+                val path = request.url.encodedPath
+                when (path) {
+                    unauthorizedPath -> respond("{}", HttpStatusCode.Unauthorized)
+                    failedPath -> respond("{}", HttpStatusCode.InternalServerError)
+                    else -> {
+                        val data = when (path) {
+                            "/api/auth/me" -> user
+                            "/api/subscription" -> subscription
+                            "/api/credits" -> """{"balance_usd":42,"welfare_balance_usd":3}"""
+                            "/api/request-logs/model-stats" -> models
+                            else -> {
+                                val range = Json.parseToJsonElement((request.body as TextContent).text).jsonObject
+                                if (range["start_time"]?.jsonPrimitive?.content == "2026-10-11T00:00:00")
+                                    stats.replace("\"total_requests\":9", "\"total_requests\":30")
+                                else stats
+                            }
+                        }
+                        respond(envelope(data))
+                    }
+                }
+            }),
+            now = { initial },
+        )
+        val session = AccountSession("token-a", null)
+        val seven = client.load(session)
+        failedPath = "/api/request-logs/stats"
+        val missingThirty = client.load(session, days = 30, refresh = true)
+        assertNull(missingThirty.statistics)
+        assertNull(missingThirty.usage)
+        failedPath = null
+        val thirty = client.load(session, days = 30)
+        assertEquals(30L, thirty.statistics?.requests)
+        for ((path, label) in listOf(
+            "/api/credits" to "钱包",
+            "/api/subscription" to "套餐",
+            "/api/request-logs/stats" to "统计",
+            "/api/request-logs/model-stats" to "模型统计",
+        )) {
+            failedPath = path
+            val result = client.load(session, refresh = true)
+            assertTrue(result.warnings.any { it.contains(label) && it.contains("失败") })
+            when (path) {
+                "/api/credits" -> {
+                    assertEquals(seven.balanceUsd, result.balanceUsd)
+                    assertEquals(seven.welfareUsd, result.welfareUsd)
+                }
+                "/api/subscription" -> assertEquals(seven.subscriptions, result.subscriptions)
+                "/api/request-logs/stats" -> {
+                    assertEquals(seven.statistics, result.statistics)
+                    assertEquals(seven.usage?.daily, result.usage?.daily)
+                    assertTrue(result.usage!!.stale)
+                }
+                else -> {
+                    assertEquals(seven.usage?.models, result.usage?.models)
+                    assertTrue(result.usage!!.stale)
+                }
+            }
+        }
+        failedPath = "/api/request-logs/stats"
+        assertEquals(thirty.statistics, client.load(session, days = 30, refresh = true).statistics)
+        val other = client.load(AccountSession("token-b", null), refresh = true)
+        assertNull(other.statistics)
+        assertNull(other.usage)
+        failedPath = null
+        client.load(session, refresh = true)
+        unauthorizedPath = "/api/credits"
+        assertFailsWith<AccountSessionExpired> { client.load(session, refresh = true) }
+        unauthorizedPath = null
+        failedPath = "/api/request-logs/stats"
+        val after401 = client.load(session, refresh = true)
+        assertNull(after401.statistics)
+        assertNull(after401.usage)
+        client.close()
+    }
+
+    @Test
+    fun partialSuccessesBecomeFallbacksWithoutBecomingFastCacheHits() = runTest {
+        var failedPath = "/api/request-logs/stats"
+        var calls = 0
+        val client = AccountClient(
+            HttpClient(MockEngine { request ->
+                calls++
+                val path = request.url.encodedPath
+                if (path == failedPath) respond("{}", HttpStatusCode.InternalServerError)
+                else respond(envelope(when (path) {
+                    "/api/auth/me" -> user
+                    "/api/subscription" -> subscription
+                    "/api/credits" -> """{"balance_usd":42,"welfare_balance_usd":3}"""
+                    "/api/request-logs/model-stats" -> models
+                    else -> stats
+                }))
+            }),
+            now = { initial },
+        )
+        val session = AccountSession("token", null)
+        val first = client.load(session)
+        assertNull(first.statistics)
+        failedPath = "/api/credits"
+        val before = calls
+        val second = client.load(session)
+        assertTrue(calls > before + 1)
+        assertEquals(42.0, second.balanceUsd)
+        assertEquals(3.0, second.welfareUsd)
+        assertTrue(second.warnings.any { it.contains("钱包使用上次成功数据") })
+        assertNotNull(second.statistics)
+        failedPath = "/api/request-logs/stats"
+        val third = client.load(session, refresh = true)
+        assertEquals(second.statistics, third.statistics)
+        assertEquals(second.usage?.daily, third.usage?.daily)
+        assertTrue(third.usage!!.stale)
+        assertTrue(third.warnings.any { it.contains("统计使用上次成功数据") })
+        client.close()
+    }
+
+    @Test
+    fun subscriptionWalletValuesAreRetainedWhenBothEndpointsFail() = runTest {
+        var creditsFail = true
+        var subscriptionFail = false
+        var subscriptionBalance = 20
+        val client = AccountClient(
+            HttpClient(MockEngine { request ->
+                val path = request.url.encodedPath
+                if ((path == "/api/credits" && creditsFail) ||
+                    (path == "/api/subscription" && subscriptionFail))
+                    respond("{}", HttpStatusCode.InternalServerError)
+                else respond(envelope(when (path) {
+                    "/api/auth/me" -> user
+                    "/api/subscription" -> """{"subscriptions":[],"credit_balance_usd":$subscriptionBalance,"welfare_balance_usd":2}"""
+                    "/api/credits" -> """{"balance_usd":42,"welfare_balance_usd":3}"""
+                    "/api/request-logs/model-stats" -> models
+                    else -> stats
+                }))
+            }),
+            now = { initial },
+        )
+        val session = AccountSession("token", null)
+        assertEquals(20.0, client.load(session).balanceUsd)
+        subscriptionFail = true
+        val retainedFirst = client.load(session, refresh = true)
+        assertEquals(20.0, retainedFirst.balanceUsd)
+        assertEquals(2.0, retainedFirst.welfareUsd)
+        creditsFail = false
+        assertEquals(42.0, client.load(session, refresh = true).balanceUsd)
+        creditsFail = true
+        subscriptionFail = false
+        subscriptionBalance = 21
+        val updated = client.load(session, refresh = true)
+        assertEquals(21.0, updated.balanceUsd)
+        assertEquals(2.0, updated.welfareUsd)
+        subscriptionFail = true
+        val retained = client.load(session, refresh = true)
+        assertEquals(21.0, retained.balanceUsd)
+        assertEquals(2.0, retained.welfareUsd)
+        assertTrue(retained.warnings.any { it.contains("钱包使用上次成功数据") })
+        client.close()
+    }
+
+    @Test
     fun errorsAndOptionalFieldsDoNotExposeCredentialsOrInventZeros() = runTest {
         val client =
             AccountClient(

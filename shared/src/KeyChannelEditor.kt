@@ -13,33 +13,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun KeyChannelEditor(state: KeyManagementState) {
     val item = state.channelItem ?: return
     val catalog = state.channels
     val unknown = state.channelSelection - catalog.orEmpty().map { it.id }.toSet()
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = state::closeChannels,
-        modifier = Modifier.widthIn(max = 520.dp),
-        shape = RoundedCornerShape(28.dp),
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        title = {
-            Column {
-                Text(if (state.newKeyConfiguration) "创建完成 · 配置渠道" else "渠道配置")
-                Text(
-                    item.name?.takeIf { it.isNotBlank() } ?: "未命名 Key",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-        },
-        text = {
-            Column(
-                Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().widthIn(max = 520.dp).imePadding().navigationBarsPadding()
+                .verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+                Text(if (state.newKeyConfiguration) "创建完成 · 配置渠道" else "渠道配置", style = MaterialTheme.typography.titleLarge)
+                Text(item.name?.takeIf { it.isNotBlank() } ?: "未命名 Key", style = MaterialTheme.typography.bodyMedium)
                 if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.channelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text("点击卡片选择渠道，可多选。", style = MaterialTheme.typography.bodySmall)
+                Text("默认配置可能使用账号余额。", style = MaterialTheme.typography.bodySmall)
                 if (state.newKeyConfiguration)
                     Text("保存或跳过后，验证身份即可查看新 Key。", style = MaterialTheme.typography.bodySmall)
                 if (catalog != null) {
@@ -109,21 +104,7 @@ internal fun KeyChannelEditor(state: KeyManagementState) {
                                     }
                                 }
                                 Spacer(Modifier.width(10.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color =
-                                        if (selected) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.surfaceContainerHigh,
-                                    contentColor =
-                                        if (selected) MaterialTheme.colorScheme.onPrimary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                ) {
-                                    Text(
-                                        if (selected) "已选" else "选择",
-                                        Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                    )
-                                }
+                                Checkbox(checked = selected, onCheckedChange = null, enabled = !state.busy)
                             }
                         }
                     }
@@ -136,17 +117,12 @@ internal fun KeyChannelEditor(state: KeyManagementState) {
                         Text("重新读取")
                     }
                 }
-            }
-        },
-        confirmButton = {
-            Button(onClick = state::saveChannels, enabled = !state.busy && catalog != null) {
-                Text(if (state.newKeyConfiguration) "保存并查看 Key" else "保存渠道")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = state::finishChannels, enabled = !state.busy) {
-                Text(if (state.newKeyConfiguration) "跳过并查看 Key" else "取消")
-            }
-        },
-    )
+                Button(onClick = state::saveChannels, enabled = !state.busy && catalog != null, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+                    Text(if (state.newKeyConfiguration) "保存并查看 Key" else "保存渠道")
+                }
+                TextButton(onClick = state::finishChannels, enabled = !state.busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+                    Text(if (state.newKeyConfiguration) "跳过并查看 Key" else "取消")
+                }
+        }
+    }
 }

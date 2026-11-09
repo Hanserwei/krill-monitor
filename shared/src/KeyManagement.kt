@@ -1,8 +1,16 @@
 package com.hanserwei.krill_monitor
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -424,125 +432,108 @@ internal class KeyManagementState(
 
 @Composable
 internal fun KeyManagementPanel(state: KeyManagementState) {
-    var name by remember { mutableStateOf("") }
-    Panel("账号 Key 管理") {
-        Text("默认配置可能使用账号余额；已有 Key 若本机没有副本则无法找回完整值。", style = MaterialTheme.typography.bodySmall)
+    var name by rememberSaveable { mutableStateOf("") }
+    val createInteraction = remember { MutableInteractionSource() }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        ) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("每次查看，都先验证身份", fontSize = 20.sp, style = MaterialTheme.typography.titleLarge)
+                Text("查看或复制需通过系统认证", fontSize = 14.sp, style = MaterialTheme.typography.bodyMedium)
+                Text("本机保存的密钥副本经过加密", fontSize = 12.sp, style = MaterialTheme.typography.bodySmall)
+            }
+        }
         state.unavailableReason?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (state.pendingSave != null) {
-            Button(onClick = state::retrySave, enabled = !state.busy) { Text("重试保存") }
+            Text("Key 尚未保存在本机，请重试保存，勿重复创建或轮换。", color = MaterialTheme.colorScheme.error)
+            Button(onClick = state::retrySave, enabled = !state.busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("重试保存") }
         }
+        if (state.busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("我的密钥", fontSize = 22.sp, style = MaterialTheme.typography.titleLarge)
+            Text(state.data?.items?.size?.let { "${it}个" } ?: "—", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        val items = state.data?.items
+        if (items == null && state.busy) Text("正在加载 Key…", style = MaterialTheme.typography.bodyMedium)
+        if (items == null && !state.busy && state.error != null) {
+            TextButton(onClick = { state.load(force = true) }) { Text("重新加载") }
+        }
+        if (items?.isEmpty() == true) Text("暂无 Key", style = MaterialTheme.typography.bodyMedium)
+        if (!items.isNullOrEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                items.forEachIndexed { index, item ->
+                    var expanded by remember(item.id) { mutableStateOf(false) }
+                    LaunchedEffect(state.busy) { if (state.busy) expanded = false }
+                    val local = state.hasKey(item)
+                    ListItem(
+                        modifier = Modifier.clip(groupedShape(index, items.size)),
+                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                        leadingContent = {
+                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(40.dp)) {
+                                Box(contentAlignment = Alignment.Center) { MonitorIcon(if (local == false) "key_off" else "key") }
+                            }
+                        },
+                        headlineContent = { Text(item.name?.takeIf { it.isNotBlank() } ?: "未命名") },
+                        supportingContent = {
+                            Column {
+                                Text("${item.prefix?.takeIf { it.isNotBlank() }?.let { it.take(minOf(8, it.length - 1)) + "••••" } ?: "—"} · ${if (item.revoked) "已撤销" else "有效"}")
+                                Text(when {
+                                    state.pendingSave?.item?.id == item.id -> "新 Key 尚未保存，请重试保存"
+                                    local == false -> "本机未保存，完整 Key 无法找回"
+                                    local == null -> "本机副本状态读取失败，请稍后重试"
+                                    else -> "上次使用：${item.lastUsedAt?.let(::beijingTimeText) ?: "—"}"
+                                })
+                            }
+                        },
+                        trailingContent = {
+                            Box {
+                                IconButton(onClick = { expanded = true }, enabled = !state.busy) { MonitorIcon("more_vert", contentDescription = "管理 Key") }
+                                DropdownMenu(expanded = expanded && !state.busy, onDismissRequest = { expanded = false }) {
+                                    if (state.pendingSave?.item?.id != item.id && local == true) {
+                                        DropdownMenuItem(text = { Text("查看") }, onClick = { expanded = false; state.reveal(item) })
+                                        DropdownMenuItem(text = { Text("复制") }, onClick = { expanded = false; state.copy(item) })
+                                    }
+                                    if (!item.revoked) DropdownMenuItem(text = { Text("渠道配置") }, onClick = { expanded = false; state.openChannels(item) })
+                                    DropdownMenuItem(text = { Text("重命名") }, onClick = { expanded = false; state.editing = item })
+                                    if (!item.revoked) {
+                                        DropdownMenuItem(text = { Text("轮换") }, enabled = state.pendingSave == null, onClick = { expanded = false; state.action = "轮换" to item })
+                                        DropdownMenuItem(text = { Text("撤销") }, onClick = { expanded = false; state.action = "撤销" to item })
+                                    }
+                                    DropdownMenuItem(text = { Text("永久删除", color = MaterialTheme.colorScheme.error) }, onClick = { expanded = false; state.action = "永久删除" to item })
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        Text("新建密钥", fontSize = 22.sp, style = MaterialTheme.typography.titleLarge)
         OutlinedTextField(
             value = name,
             onValueChange = { name = it },
             label = { Text("名称（可选）") },
+            leadingIcon = { MonitorIcon("edit") },
+            enabled = !state.busy,
             singleLine = true,
+            shape = RoundedCornerShape(16.dp),
             modifier = Modifier.fillMaxWidth(),
         )
         Button(
-            onClick = {
-                state.create(name)
-                name = ""
-            },
-            enabled =
-                !state.busy &&
-                    state.pendingSave == null &&
-                    state.data != null &&
-                    state.enabled &&
-                    state.unavailableReason == null,
+            onClick = { state.create(name); name = "" },
+            enabled = !state.busy && state.pendingSave == null && state.data != null && state.enabled && state.unavailableReason == null,
+            interactionSource = createInteraction,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).pressScale(createInteraction),
         ) {
+            MonitorIcon("add")
+            Spacer(Modifier.width(8.dp))
             Text("创建 Key")
         }
-        if (state.busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        state.data?.items?.forEach { item ->
-            var expanded by remember(item.id) { mutableStateOf(false) }
-            HorizontalDivider()
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        item.name?.takeIf { it.isNotBlank() } ?: "未命名",
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text("前缀：${item.prefix ?: "未提供"} · ${if (item.revoked) "已撤销" else "有效"}")
-                    Text(
-                        "上次使用：${item.lastUsedAt?.let(::beijingTimeText) ?: "未使用"}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text(
-                        when {
-                            state.pendingSave?.item?.id == item.id -> "新Key尚未保存，请重试保存"
-                            else ->
-                                when (state.hasKey(item)) {
-                                    true -> "本机有加密副本"
-                                    false -> "本机无副本，完整 Key 无法找回"
-                                    null -> "本机副本状态读取失败，请稍后重试"
-                                }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Box {
-                    TextButton(onClick = { expanded = true }, enabled = !state.busy) { Text("管理") }
-                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                        if (state.pendingSave?.item?.id != item.id && state.hasKey(item) == true) {
-                            DropdownMenuItem(
-                                text = { Text("查看") },
-                                onClick = {
-                                    expanded = false
-                                    state.reveal(item)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("复制") },
-                                onClick = {
-                                    expanded = false
-                                    state.copy(item)
-                                },
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("重命名") },
-                            onClick = {
-                                expanded = false
-                                state.editing = item
-                            },
-                        )
-                        if (!item.revoked) {
-                            DropdownMenuItem(
-                                text = { Text("渠道配置") },
-                                onClick = {
-                                    expanded = false
-                                    state.openChannels(item)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("轮换") },
-                                enabled = state.pendingSave == null,
-                                onClick = {
-                                    expanded = false
-                                    state.action = "轮换" to item
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("撤销") },
-                                onClick = {
-                                    expanded = false
-                                    state.action = "撤销" to item
-                                },
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("永久删除") },
-                            onClick = {
-                                expanded = false
-                                state.action = "永久删除" to item
-                            },
-                        )
-                    }
-                }
-            }
-        }
-        if (state.data?.items?.isEmpty() == true) Text("暂无 Key")
+        Text("未保存在本机的完整密钥无法找回", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -552,17 +543,21 @@ internal fun KeyManagementDialogs(state: KeyManagementState) {
         var value by remember(item.id) { mutableStateOf(item.name.orEmpty()) }
         AlertDialog(
             onDismissRequest = { state.editing = null },
+            shape = RoundedCornerShape(28.dp),
             title = { Text("重命名 Key") },
             text = {
                 OutlinedTextField(
                     value,
                     { value = it },
+                    enabled = !state.busy,
                     label = { Text("名称（可选）") },
+                    shape = RoundedCornerShape(16.dp),
                     singleLine = true,
                 )
             },
             confirmButton = {
                 TextButton(
+                    enabled = !state.busy,
                     onClick = {
                         state.rename(item, value)
                         state.editing = null
@@ -583,8 +578,9 @@ internal fun KeyManagementDialogs(state: KeyManagementState) {
             }
         AlertDialog(
             onDismissRequest = { state.action = null },
+            shape = RoundedCornerShape(28.dp),
             title = { Text("确认$kind") },
-            text = { Text("${item.name ?: "未命名"}（${item.prefix ?: "无前缀"}）\n$description") },
+            text = { Text("${item.name ?: "未命名"}（${item.prefix?.takeIf { it.isNotBlank() }?.let { it.take(minOf(8, it.length - 1)) + "••••" } ?: "—"}）\n$description") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -596,7 +592,7 @@ internal fun KeyManagementDialogs(state: KeyManagementState) {
                         state.action = null
                     }
                 ) {
-                    Text(kind)
+                    Text(kind, color = if (kind == "轮换") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = { TextButton(onClick = { state.action = null }) { Text("取消") } },

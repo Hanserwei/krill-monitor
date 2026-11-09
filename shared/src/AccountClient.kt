@@ -26,9 +26,11 @@ class AccountClient(
     private val now: () -> Instant = { Clock.System.now() },
 ) {
     private var cachedToken: String? = null
-    private var cachedDays = 0
-    private var cachedDay: String? = null
-    private var cached: AccountDashboard? = null
+    private val cached = mutableMapOf<Int, AccountDashboard>()
+    private var cachedWallet: Pair<Double?, Double?>? = null
+    private var cachedSubscriptions: JsonObject? = null
+    private val cachedStats = mutableMapOf<Int, Pair<Instant, JsonObject>>()
+    private val cachedModels = mutableMapOf<Int, Pair<Instant, JsonObject>>()
     private val retries = mutableMapOf<String, Pair<Instant, String>>()
     private val codeSendLock = Mutex()
     private val keySecretLock = Mutex()
@@ -124,7 +126,10 @@ class AccountClient(
         days: Int = 7,
         refresh: Boolean = false,
     ): AccountDashboard = coroutineScope {
-        if (!safeCredential(session.token)) throw AccountSessionExpired()
+        if (!safeCredential(session.token)) {
+            clearCache()
+            throw AccountSessionExpired()
+        }
         if (days !in listOf(7, 30)) throw AccountAccessException("查询范围仅支持 7 或 30 天")
         val time = now()
         val day = beijingDate(time)
@@ -132,7 +137,7 @@ class AccountClient(
             clearCache()
             cachedToken = session.token
         }
-        val old = cached?.takeIf { cachedDays == days && cachedDay == day }
+        val old = cached[days]?.takeIf { beijingDate(it.fetchedAt) == day }
         retries["account"]
             ?.takeIf { it.first > time }
             ?.let {
@@ -153,7 +158,8 @@ class AccountClient(
             }
         validateUser(me)
         if (
-            !refresh && old != null && time.epochSeconds - old.fetchedAt.epochSeconds in 0 until 300
+            !refresh && old != null && old.warnings.isEmpty() && old.usage?.warnings?.isEmpty() == true &&
+                !old.usage.stale && time.epochSeconds - old.fetchedAt.epochSeconds in 0 until 300
         )
             return@coroutineScope old.copy(
                 email = me.text("email"),
@@ -177,29 +183,44 @@ class AccountClient(
             val credits = creditsJob.await()
             val stats = statsJob.await()
             val models = modelsJob.await()
-            val usage =
-                if (stats != null) parseAccountUsage(stats, models, time, days)
-                else old?.usage?.copy(fromCache = true, stale = true)
-            val result =
-                AccountDashboard(
-                    email = me.text("email") ?: session.email,
-                    balanceUsd =
-                        credits?.amount("balance_usd")
-                            ?: subscriptions?.amount("credit_balance_usd"),
-                    welfareUsd =
-                        credits?.amount("welfare_balance_usd")
-                            ?: subscriptions?.amount("welfare_balance_usd"),
-                    subscriptions = parseSubscriptions(subscriptions, warnings),
-                    statistics = stats?.let(::parseAccountStatistics),
-                    usage = usage,
-                    fetchedAt = time,
-                    warnings = warnings.toList(),
-                )
-            if (warnings.isEmpty() && usage?.warnings?.isEmpty() == true) {
-                cached = result
-                cachedDays = days
-                cachedDay = day
+            val previousStats = cachedStats[days]?.takeIf { beijingDate(it.first) == day }
+            val previousModels = cachedModels[days]?.takeIf { beijingDate(it.first) == day }
+            if (subscriptions == null && cachedSubscriptions != null) warnings += "套餐使用上次成功数据"
+            if (stats == null && previousStats != null) warnings += "统计使用上次成功数据"
+            if (models == null && previousModels != null) warnings += "模型统计使用上次成功数据"
+            val effectiveStats = stats ?: previousStats?.second
+            val effectiveModels = models ?: previousModels?.second
+            val usage = effectiveStats?.let {
+                parseAccountUsage(it, effectiveModels, if (stats == null) previousStats!!.first else time, days)
+                    .let { report ->
+                        if (stats == null || (models == null && previousModels != null))
+                            report.copy(fromCache = true, stale = true)
+                        else report
+                    }
             }
+            val balance = credits?.amount("balance_usd") ?: subscriptions?.amount("credit_balance_usd")
+            val welfare = credits?.amount("welfare_balance_usd") ?: subscriptions?.amount("welfare_balance_usd")
+            val wallet =
+                (balance ?: if (credits == null) cachedWallet?.first else null) to
+                    (welfare ?: if (credits == null) cachedWallet?.second else null)
+            if (credits == null && ((balance == null && cachedWallet?.first != null) ||
+                    (welfare == null && cachedWallet?.second != null)))
+                warnings += "钱包使用上次成功数据"
+            val result = AccountDashboard(
+                email = me.text("email") ?: session.email,
+                balanceUsd = wallet.first,
+                welfareUsd = wallet.second,
+                subscriptions = parseSubscriptions(subscriptions ?: cachedSubscriptions, warnings),
+                statistics = effectiveStats?.let(::parseAccountStatistics),
+                usage = usage,
+                fetchedAt = time,
+                warnings = warnings.toList(),
+            )
+            if (credits != null || balance != null || welfare != null) cachedWallet = wallet
+            if (subscriptions != null) cachedSubscriptions = subscriptions
+            if (stats != null) cachedStats[days] = time to stats
+            if (models != null) cachedModels[days] = time to models
+            cached[days] = result
             result
         } catch (e: AccountSessionExpired) {
             clearCache()
@@ -389,7 +410,11 @@ class AccountClient(
 
     private fun clearCache() {
         cachedToken = null
-        cached = null
+        cached.clear()
+        cachedWallet = null
+        cachedSubscriptions = null
+        cachedStats.clear()
+        cachedModels.clear()
         retries.remove("account")
     }
 
@@ -554,7 +579,7 @@ class AccountClient(
             throw e
         } catch (_: Throwable) {
             if (uncertain) throw AccountAccessException("Key 操作可能已生效，但无法确认新 Key；请先刷新列表，勿重复创建或轮换")
-            throw AccountAccessException("无法连接账号服务，请检查网络；Web 版请使用同源账号服务启动命令")
+            throw AccountAccessException("无法连接账号服务，请检查网络后重试。")
         }
     }
 }

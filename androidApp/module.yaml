@@ -11,8 +11,8 @@ settings:
   android:
     namespace: com.hanserwei.krill_monitor
     applicationId: com.hanserwei.krill_monitor
-    versionCode: 1
-    versionName: "0.1.0"
+    versionCode: 3
+    versionName: "0.2.1"
     compileSdk: 37
     targetSdk: 37
     minSdk: 24
