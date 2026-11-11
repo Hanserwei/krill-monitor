@@ -25,17 +25,21 @@ class AccountClient(
     private val baseUrl: String = "https://www.krill-code.com",
     private val now: () -> Instant = { Clock.System.now() },
 ) {
+    private data class CachedResponse(val fetchedAt: Instant, val data: JsonObject)
+    private data class WalletBalance(val balanceUsd: Double?, val welfareUsd: Double?)
+    private data class RetryDelay(val retryAt: Instant, val message: String)
+
     private var cachedToken: String? = null
-    private val cached = mutableMapOf<Int, AccountDashboard>()
-    private var cachedWallet: Pair<Double?, Double?>? = null
+    private val cachedDashboards = mutableMapOf<Int, AccountDashboard>()
+    private var cachedWallet: WalletBalance? = null
     private var cachedSubscriptions: JsonObject? = null
-    private val cachedStats = mutableMapOf<Int, Pair<Instant, JsonObject>>()
-    private val cachedModels = mutableMapOf<Int, Pair<Instant, JsonObject>>()
+    private val cachedStats = mutableMapOf<Int, CachedResponse>()
+    private val cachedModels = mutableMapOf<Int, CachedResponse>()
     private data class ModelCacheKey(val model: String, val days: Int, val date: String)
     private val cachedModelStatistics = mutableMapOf<ModelCacheKey, ModelStatisticsReport>()
     private val modelStatisticsLocks = mutableMapOf<ModelCacheKey, Mutex>()
     private var cacheGeneration = 0L
-    private val retries = mutableMapOf<String, Pair<Instant, String>>()
+    private val retries = mutableMapOf<String, RetryDelay>()
     private val codeSendLock = Mutex()
     private val keySecretLock = Mutex()
     // 间隔未知时按邮箱保留本会话申请记录，编辑邮箱或切页不能解除保护。
@@ -67,8 +71,8 @@ class AccountClient(
                 throw AccountAccessException("此邮箱已申请验证码，但官网未提供重发时间；请先检查邮箱或在官网重新申请")
             val path = "/api/auth/login/send-code"
             retries[path]
-                ?.takeIf { it.first > now() }
-                ?.let { throw AccountAccessException(it.second) }
+                ?.takeIf { it.retryAt > now() }
+                ?.let { throw AccountAccessException(it.message) }
             val settings = request("/api/public/auth-settings")
             val enforced =
                 (settings["turnstile_enforced"] as? JsonPrimitive)?.booleanOrNull
@@ -79,9 +83,10 @@ class AccountClient(
             val seconds = data.count("resend_after_seconds")
             if (seconds != null) {
                 val maximum = (253402300799L - now().epochSeconds).coerceAtLeast(0)
-                retries[path] =
-                    Instant.fromEpochSeconds(now().epochSeconds + seconds.coerceAtMost(maximum)) to
-                        "验证码申请间隔未结束，请稍后重发"
+                retries[path] = RetryDelay(
+                    retryAt = Instant.fromEpochSeconds(now().epochSeconds + seconds.coerceAtMost(maximum)),
+                    message = "验证码申请间隔未结束，请稍后重发",
+                )
             } else unknownCodeResends += address.lowercase()
             return EmailCodeDispatch(seconds)
         } finally {
@@ -141,17 +146,16 @@ class AccountClient(
             clearCache()
             cachedToken = session.token
         }
-        val old = cached[days]?.takeIf { beijingDate(it.fetchedAt) == day }
-        retries["account"]
-            ?.takeIf { it.first > time }
-            ?.let {
-                if (old != null)
-                    return@coroutineScope old.copy(
-                        usage = old.usage?.copy(fromCache = true, stale = true),
-                        warnings = old.warnings + "账号接口请求受限，请稍后重试",
-                    )
-                throw AccountAccessException("账号接口请求受限，请稍后重试")
+        val old = cachedDashboards[days]?.takeIf { beijingDate(it.fetchedAt) == day }
+        if (retries["account"]?.let { it.retryAt > time } == true) {
+            if (old != null) {
+                return@coroutineScope old.copy(
+                    usage = old.usage?.copy(fromCache = true, stale = true),
+                    warnings = old.warnings + "账号接口请求受限，请稍后重试",
+                )
             }
+            throw AccountAccessException("账号接口请求受限，请稍后重试")
+        }
         // 即使命中统计缓存也验证身份，失效会话不能继续显示旧账户数据。
         val me =
             try {
@@ -170,6 +174,7 @@ class AccountClient(
                 usage = old.usage?.copy(fromCache = true),
             )
         val warnings = mutableListOf<String>()
+        // 单项查询失败可回退；会话失效和协程取消必须继续向外传播。
         suspend fun optional(path: String, label: String, body: JsonObject? = null): JsonObject? =
             try {
                 request(path, session.token, body)
@@ -187,44 +192,48 @@ class AccountClient(
             val credits = creditsJob.await()
             val stats = statsJob.await()
             val models = modelsJob.await()
-            val previousStats = cachedStats[days]?.takeIf { beijingDate(it.first) == day }
-            val previousModels = cachedModels[days]?.takeIf { beijingDate(it.first) == day }
+            // 统计缓存只用于同一北京时间日期、同一查询天数，避免混入旧范围。
+            val previousStats = cachedStats[days]?.takeIf { beijingDate(it.fetchedAt) == day }
+            val previousModels = cachedModels[days]?.takeIf { beijingDate(it.fetchedAt) == day }
             if (subscriptions == null && cachedSubscriptions != null) warnings += "套餐使用上次成功数据"
             if (stats == null && previousStats != null) warnings += "统计使用上次成功数据"
             if (models == null && previousModels != null) warnings += "模型统计使用上次成功数据"
-            val effectiveStats = stats ?: previousStats?.second
-            val effectiveModels = models ?: previousModels?.second
-            val usage = effectiveStats?.let {
-                parseAccountUsage(it, effectiveModels, if (stats == null) previousStats!!.first else time, days)
-                    .let { report ->
-                        if (stats == null || (models == null && previousModels != null))
-                            report.copy(fromCache = true, stale = true)
-                        else report
-                    }
+            val freshStats = stats?.let { CachedResponse(time, it) }
+            val effectiveStats = freshStats ?: previousStats
+            val effectiveModels = models ?: previousModels?.data
+            val usage = effectiveStats?.let { response ->
+                val report = parseAccountUsage(response.data, effectiveModels, response.fetchedAt, days)
+                if (stats == null || (models == null && previousModels != null))
+                    report.copy(fromCache = true, stale = true)
+                else report
             }
             val balance = credits?.amount("balance_usd") ?: subscriptions?.amount("credit_balance_usd")
             val welfare = credits?.amount("welfare_balance_usd") ?: subscriptions?.amount("welfare_balance_usd")
-            val wallet =
-                (balance ?: if (credits == null) cachedWallet?.first else null) to
-                    (welfare ?: if (credits == null) cachedWallet?.second else null)
-            if (credits == null && ((balance == null && cachedWallet?.first != null) ||
-                    (welfare == null && cachedWallet?.second != null)))
-                warnings += "钱包使用上次成功数据"
+            // 钱包接口成功时不沿用旧余额；当前钱包和套餐中都缺失的字段表示未知。
+            val previousWallet = if (credits == null) cachedWallet else null
+            val wallet = WalletBalance(
+                balanceUsd = balance ?: previousWallet?.balanceUsd,
+                welfareUsd = welfare ?: previousWallet?.welfareUsd,
+            )
+            val usesCachedWallet =
+                (balance == null && previousWallet?.balanceUsd != null) ||
+                    (welfare == null && previousWallet?.welfareUsd != null)
+            if (usesCachedWallet) warnings += "钱包使用上次成功数据"
             val result = AccountDashboard(
                 email = me.text("email") ?: session.email,
-                balanceUsd = wallet.first,
-                welfareUsd = wallet.second,
+                balanceUsd = wallet.balanceUsd,
+                welfareUsd = wallet.welfareUsd,
                 subscriptions = parseSubscriptions(subscriptions ?: cachedSubscriptions, warnings),
-                statistics = effectiveStats?.let(::parseAccountStatistics),
+                statistics = effectiveStats?.data?.let(::parseAccountStatistics),
                 usage = usage,
                 fetchedAt = time,
                 warnings = warnings.toList(),
             )
             if (credits != null || balance != null || welfare != null) cachedWallet = wallet
             if (subscriptions != null) cachedSubscriptions = subscriptions
-            if (stats != null) cachedStats[days] = time to stats
-            if (models != null) cachedModels[days] = time to models
-            cached[days] = result
+            if (freshStats != null) cachedStats[days] = freshStats
+            if (models != null) cachedModels[days] = CachedResponse(time, models)
+            cachedDashboards[days] = result
             result
         } catch (e: AccountSessionExpired) {
             clearCache()
@@ -474,7 +483,7 @@ class AccountClient(
         cachedModelStatistics.clear()
         modelStatisticsLocks.clear()
         cachedToken = null
-        cached.clear()
+        cachedDashboards.clear()
         cachedWallet = null
         cachedSubscriptions = null
         cachedStats.clear()
@@ -538,8 +547,8 @@ class AccountClient(
         val requestGeneration = cacheGeneration
         val retryKey = if (token == null) path else "account"
         retries[retryKey]
-            ?.takeIf { it.first > now() }
-            ?.let { throw AccountAccessException(it.second, transient = token != null) }
+            ?.takeIf { it.retryAt > now() }
+            ?.let { throw AccountAccessException(it.message, transient = token != null) }
         try {
             return http
                 .prepareRequest(baseUrl.trimEnd('/') + path) {
@@ -610,7 +619,7 @@ class AccountClient(
                                 now().epochSeconds + (headerWait ?: 60L).coerceAtMost(maximumWait)
                             )
                         if (requestGeneration == cacheGeneration && (token == null || cachedToken == null || cachedToken == token))
-                            retries[retryKey] = retryAt to retryMessage
+                            retries[retryKey] = RetryDelay(retryAt, retryMessage)
                         throw AccountAccessException(retryMessage, transient = token != null)
                     }
                     if (status == 403) {
@@ -694,18 +703,18 @@ internal fun accountRange(time: Instant, days: Int): JsonObject {
 
 private fun parseAccountStatistics(stats: JsonObject) =
     AccountStatistics(
-        stats.count("total_requests"),
-        stats.count("failed_requests"),
-        stats.count("input_tokens"),
-        stats.count("output_tokens"),
-        stats.count("cache_read_input_tokens"),
-        stats.count("cache_creation_input_tokens"),
-        stats.count("reasoning_tokens"),
-        stats.count("total_tokens"),
-        stats.amount("total_cost_usd"),
-        stats.amount("overall_tps"),
-        stats.count("cache_rate_read_tokens"),
-        stats.count("cache_rate_eligible_tokens"),
+        requests = stats.count("total_requests"),
+        failedRequests = stats.count("failed_requests"),
+        inputTokens = stats.count("input_tokens"),
+        outputTokens = stats.count("output_tokens"),
+        cachedInputTokens = stats.count("cache_read_input_tokens"),
+        cacheWriteTokens = stats.count("cache_creation_input_tokens"),
+        reasoningTokens = stats.count("reasoning_tokens"),
+        totalTokens = stats.count("total_tokens"),
+        costUsd = stats.amount("total_cost_usd"),
+        tps = stats.amount("overall_tps"),
+        cacheRateReadTokens = stats.count("cache_rate_read_tokens"),
+        cacheRateEligibleTokens = stats.count("cache_rate_eligible_tokens"),
     )
 
 private fun parseSubscriptions(
@@ -728,104 +737,103 @@ private fun parseSubscriptions(
                 }
         val plan = item["plan"] as? JsonObject ?: JsonObject(emptyMap())
         val quota = item["quota"] as? JsonObject ?: JsonObject(emptyMap())
+        val billingType = plan.text("billing_type")
+        val creditLimit = quota.amount("limit_credits") ?: plan.amount("total_credits")
         val quotas = mutableListOf<AccountQuota>()
-        fun usd(
+        fun addUsdQuota(
             label: String,
             source: JsonObject,
-            limit: String,
-            used: String,
-            remaining: String,
-            reset: Instant? = null,
-            start: Instant? = null,
+            limitField: String,
+            usedField: String,
+            remainingField: String,
+            resetsAt: Instant? = null,
+            startsAt: Instant? = null,
             weekly: Boolean = false,
         ) {
-            val limitAmount = source.amount(limit)
-            val usedAmount = source.amount(used)
-            quotas +=
-                AccountQuota(
-                    label,
-                    "USD",
-                    limitAmount,
-                    usedAmount,
-                    if (weekly) {
-                        if (limitAmount != null && usedAmount != null)
-                            (limitAmount - usedAmount).coerceAtLeast(0.0)
-                        else null
-                    } else source.amount(remaining),
-                    reset,
-                    start,
-                )
+            val limit = source.amount(limitField)
+            val used = source.amount(usedField)
+            // 周额度按上限减已用计算；任一字段缺失时仍显示未知，不补成零。
+            val remaining = if (weekly) {
+                if (limit != null && used != null) (limit - used).coerceAtLeast(0.0) else null
+            } else source.amount(remainingField)
+            quotas += AccountQuota(
+                label = label,
+                unit = "USD",
+                limit = limit,
+                used = used,
+                remaining = remaining,
+                resetsAt = resetsAt,
+                startsAt = startsAt,
+            )
         }
         when {
-            plan.text("billing_type") == "request_count" -> {
+            billingType == "request_count" -> {
                 val counts = data["request_count_quota"] as? JsonObject ?: JsonObject(emptyMap())
                 listOf("5h" to "5 小时", "weekly" to "本周", "monthly" to "本月").forEach {
                     (suffix, label) ->
                     quotas +=
                         AccountQuota(
-                            label,
-                            "次",
-                            counts.amount("limit_$suffix") ?: plan.amount("rate_limit_$suffix"),
-                            counts.amount("used_$suffix"),
-                            null,
+                            label = label,
+                            unit = "次",
+                            limit = counts.amount("limit_$suffix") ?: plan.amount("rate_limit_$suffix"),
+                            used = counts.amount("used_$suffix"),
+                            remaining = null,
                         )
                 }
             }
-            quota.amount("limit_credits") != null || plan.amount("total_credits") != null ->
+            creditLimit != null ->
                 quotas +=
                     AccountQuota(
-                        "Credits",
-                        "credits",
-                        quota.amount("limit_credits") ?: plan.amount("total_credits"),
-                        null,
-                        quota.amount("remaining_credits"),
+                        label = "Credits",
+                        unit = "credits",
+                        limit = creditLimit,
+                        used = null,
+                        remaining = quota.amount("remaining_credits"),
                     )
-            plan.text("billing_type") == "usd_daily" ->
-                usd("总额度", item, "total_limit_usd", "total_used_usd", "total_remaining_usd")
-            plan.text("billing_type") == "usd_weekly" -> {
-                usd(
+            billingType == "usd_daily" ->
+                addUsdQuota("总额度", item, "total_limit_usd", "total_used_usd", "total_remaining_usd")
+            billingType == "usd_weekly" -> {
+                addUsdQuota(
                     "本周额度",
                     quota,
                     "daily_limit_usd",
                     "used_usd",
                     "remaining_usd",
-                    quota.instant("window_reset_at"),
-                    quota.instant("window_start_at"),
+                    resetsAt = quota.instant("window_reset_at"),
+                    startsAt = quota.instant("window_start_at"),
                     weekly = true,
                 )
                 if ((plan.amount("duration_days") ?: 0.0) >= 14)
-                    usd("月额度", item, "total_limit_usd", "total_used_usd", "total_remaining_usd")
+                    addUsdQuota("月额度", item, "total_limit_usd", "total_used_usd", "total_remaining_usd")
             }
-            plan.text("billing_type") == "usd_monthly" ->
-                usd(
+            billingType == "usd_monthly" ->
+                addUsdQuota(
                     "总额度",
                     quota,
                     "daily_limit_usd",
                     "used_usd",
                     "remaining_usd",
-                    quota.instant("window_reset_at"),
-                    quota.instant("window_start_at"),
+                    resetsAt = quota.instant("window_reset_at"),
+                    startsAt = quota.instant("window_start_at"),
                 )
             else -> {
                 warnings += "部分套餐计费类型未识别，未推算额度"
             }
         }
-        if (
-            quota.amount("forwarded_limit_usd") != null &&
-                (quota.amount("forwarded_limit_usd") ?: 0.0) > 0
-        )
-            usd(
+        if ((quota.amount("forwarded_limit_usd") ?: 0.0) > 0)
+            addUsdQuota(
                 "结转额度",
                 quota,
                 "forwarded_limit_usd",
                 "forwarded_used_usd",
                 "forwarded_remaining_usd",
             )
+        // 套餐有效期与额度窗口各自来自接口，不能用订阅起止时间补出月额度窗口。
         AccountSubscription(
-            plan.text("name") ?: "未命名套餐",
-            item.text("status") ?: "未知",
-            item.instant("subscription_end_at"),
-            quotas,
+            name = plan.text("name") ?: "未命名套餐",
+            status = item.text("status") ?: "未知",
+            expiresAt = item.instant("subscription_end_at"),
+            quotas = quotas,
             startsAt = item.instant("subscription_start_at"),
         )
     }
@@ -848,26 +856,27 @@ private fun parseAccountUsage(
                     row.amount("total_cost_usd") != null &&
                     row.count("request_count") != null
             }
+    // 官网桶以 UTC 返回，先转为北京时间并分组，避免为每个日期重复扫描整份趋势。
+    val rowsByDate = trend
+        ?.mapNotNull { it as? JsonObject }
+        ?.groupBy { it.instant("bucket_start")?.let(::beijingDate) }
     val daily =
         (0 until days).map { index ->
             val date =
                 beijingDate(
                     Instant.fromEpochSeconds(time.epochSeconds - (days - 1 - index) * 86400L)
                 )
-            val rows =
-                trend
-                    ?.mapNotNull { it as? JsonObject }
-                    // 官网桶以 UTC 返回，不能直接截取日期当作北京时间。
-                    ?.filter { it.instant("bucket_start")?.let(::beijingDate) == date }
-            val cost = rows?.let {
-                if (it.isEmpty()) {
-                    if (trendValid) 0.0 else null
-                } else sumAmounts(it.map { r -> r.amount("total_cost_usd") })
+            val rows = rowsByDate?.get(date).orEmpty()
+            // 只有整份趋势有效时，缺少某天的记录才表示当天用量为零。
+            val cost = when {
+                rows.isNotEmpty() -> sumAmounts(rows.map { it.amount("total_cost_usd") })
+                trendValid -> 0.0
+                else -> null
             }
-            val requests = rows?.let {
-                if (it.isEmpty()) {
-                    if (trendValid) 0L else null
-                } else sumCounts(it.map { r -> r.count("request_count") })
+            val requests = when {
+                rows.isNotEmpty() -> sumCounts(rows.map { it.count("request_count") })
+                trendValid -> 0L
+                else -> null
             }
             DailyUsage(date, cost, requests, null, null, null)
         }

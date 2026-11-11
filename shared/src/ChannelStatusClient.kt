@@ -104,66 +104,87 @@ class ChannelStatusClient(
     }
 }
 
+private fun invalidChannelStatus(): Nothing =
+    throw AccountAccessException("无法获取官网渠道状态：响应格式无效")
+
 private fun parseChannelStatus(value: JsonElement): List<PublicChannelStatus> {
-    fun invalid(): Nothing = throw AccountAccessException("无法获取官网渠道状态：响应格式无效")
-    val root = value as? JsonObject ?: invalid()
+    val data = channelStatusData(value)
+    val items = data["channels"] as? JsonArray ?: invalidChannelStatus()
+    val perf = data["perf"] as? JsonArray ?: invalidChannelStatus()
+    val performance = indexChannelPerformance(perf)
+    val keys = mutableSetOf<String>()
+    return items.map { entry -> parseChannel(entry, performance, keys) }
+}
+
+private fun channelStatusData(value: JsonElement): JsonObject {
+    val root = value as? JsonObject ?: invalidChannelStatus()
     if (
         (root["success"] as? JsonPrimitive)?.booleanOrNull != true ||
             (root["code"] as? JsonPrimitive)?.intOrNull != 0
     )
-        invalid()
-    val data = root["data"] as? JsonObject ?: invalid()
-    val items = data["channels"] as? JsonArray ?: invalid()
-    val perf = data["perf"] as? JsonArray ?: invalid()
+        invalidChannelStatus()
+    return root["data"] as? JsonObject ?: invalidChannelStatus()
+}
+
+private fun indexChannelPerformance(perf: JsonArray): Map<String, JsonObject> {
     val performance = mutableMapOf<String, JsonObject>()
     for (entry in perf) {
-        val obj = entry as? JsonObject ?: invalid()
-        val key = obj.statusText("channel_key") ?: invalid()
-        if (performance.put(key, obj) != null) invalid()
+        val obj = entry as? JsonObject ?: invalidChannelStatus()
+        val key = obj.statusText("channel_key") ?: invalidChannelStatus()
+        if (performance.put(key, obj) != null) invalidChannelStatus()
     }
-    val keys = mutableSetOf<String>()
-    return items.map { entry ->
-        val obj = entry as? JsonObject ?: invalid()
-        val key = obj.statusText("channel_key") ?: invalid()
-        if (!keys.add(key)) invalid()
-        val provider = obj.statusText("provider") ?: invalid()
-        val model = obj.statusText("model_name") ?: invalid()
-        val history = obj["history"] as? JsonArray ?: invalid()
-        val metrics = performance[key]
-        PublicChannelStatus(
-            key,
-            provider,
-            model,
-            obj.statusText("channel") ?: "未分类渠道",
-            if (obj["fixed_status"] != null && obj["fixed_status"] != JsonNull)
-                statusValue(obj["fixed_status"])
-            else statusValue(obj["current_status"]),
-            history
-                .mapNotNull { point ->
-                    val p = point as? JsonObject ?: return@mapNotNull null
-                    val text = p.statusText("ts") ?: return@mapNotNull null
-                    val normalized =
-                        text.replace(' ', 'T').let {
-                            if (it.endsWith('Z') || Regex("[+-]\\d\\d:\\d\\d$").containsMatchIn(it))
-                                it
-                            else it + "Z"
-                        }
-                    val at =
-                        try {
-                            Instant.parse(normalized)
-                        } catch (_: Exception) {
-                            return@mapNotNull null
-                        }
-                    ChannelStatusPoint(at, statusValue(p["s"]))
-                }
-                .sortedBy { it.at },
-            metrics?.statusNumber("throughput_p50_tps")
-                ?: metrics?.statusNumber("throughput_avg_tps"),
-            metrics?.statusNumber("cache_rate")?.takeIf { it <= 1 },
-            metrics?.statusNumber("avg_image_time_ms"),
-        )
-    }
+    return performance
 }
+
+private fun parseChannel(
+    entry: JsonElement,
+    performance: Map<String, JsonObject>,
+    keys: MutableSet<String>,
+): PublicChannelStatus {
+    val obj = entry as? JsonObject ?: invalidChannelStatus()
+    val key = obj.statusText("channel_key") ?: invalidChannelStatus()
+    if (!keys.add(key)) invalidChannelStatus()
+    val provider = obj.statusText("provider") ?: invalidChannelStatus()
+    val model = obj.statusText("model_name") ?: invalidChannelStatus()
+    val history = obj["history"] as? JsonArray ?: invalidChannelStatus()
+    val metrics = performance[key]
+    // 固定状态只要非 null 就优先，即使其值无效也不回退到当前状态。
+    val status =
+        if (obj["fixed_status"] != null && obj["fixed_status"] != JsonNull)
+            statusValue(obj["fixed_status"])
+        else statusValue(obj["current_status"])
+    return PublicChannelStatus(
+        key,
+        provider,
+        model,
+        obj.statusText("channel") ?: "未分类渠道",
+        status,
+        parseChannelHistory(history),
+        metrics?.statusNumber("throughput_p50_tps")
+            ?: metrics?.statusNumber("throughput_avg_tps"),
+        metrics?.statusNumber("cache_rate")?.takeIf { it <= 1 },
+        metrics?.statusNumber("avg_image_time_ms"),
+    )
+}
+
+private fun parseChannelHistory(history: JsonArray): List<ChannelStatusPoint> =
+    history.mapNotNull { point ->
+        val obj = point as? JsonObject ?: return@mapNotNull null
+        val text = obj.statusText("ts") ?: return@mapNotNull null
+        // 兼容空格分隔的时间；没有时区时按 UTC 处理。
+        val normalized =
+            text.replace(' ', 'T').let {
+                if (it.endsWith('Z') || Regex("[+-]\\d\\d:\\d\\d$").containsMatchIn(it)) it
+                else it + "Z"
+            }
+        val at =
+            try {
+                Instant.parse(normalized)
+            } catch (_: Exception) {
+                return@mapNotNull null
+            }
+        ChannelStatusPoint(at, statusValue(obj["s"]))
+    }.sortedBy { it.at }
 
 private fun JsonObject.statusText(name: String): String? =
     (this[name] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }

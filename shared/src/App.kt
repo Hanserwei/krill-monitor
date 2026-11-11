@@ -65,12 +65,15 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
         val page = Page.valueOf(history.last())
         var backwards by remember { mutableStateOf(false) }
         var days by rememberSaveable { mutableIntStateOf(7) }
+        // 只有用量页使用所选天数，其他页面始终查询最近 7 天。
         val queryDays = if (page == Page.Usage) days else 7
         var revision by remember { mutableIntStateOf(0) }
         var forceRefresh by remember(session, queryDays) { mutableStateOf(false) }
+        // 滚动位置随页面保留；账户数据随会话更换而丢弃。
         val scrollStates = List(Page.entries.size) { rememberLazyListState() }
         val dashboards = remember(session) { mutableStateMapOf<Int, AccountDashboard>() }
         val accountData = dashboards[queryDays]
+        val accountEmail = dashboards[7]?.email ?: accountData?.email ?: session?.email
         val accountApi = remember(session?.token) { AccountClient(baseUrl = accountApiBaseUrl()) }
         DisposableEffect(accountApi) { onDispose { accountApi.close() } }
 
@@ -231,6 +234,17 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
             }
         }
 
+        fun login(signedIn: AccountSession, persist: Boolean) {
+            val stored = runCatching {
+                if (persist) sessionStore.save(signedIn.token) else sessionStore.clear()
+            }.getOrDefault(false)
+            storageMessage = if (stored) null else "账号会话保存失败，仅本次登录有效。"
+            session = signedIn
+            backwards = false
+            history = listOf(Page.Overview.name)
+            if (!stored) toast("会话未能保存，下次需要重新登录")
+        }
+
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val wide = maxWidth >= 840.dp
             val desktopWeb = web && wide
@@ -239,7 +253,7 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
             Row(Modifier.fillMaxSize()) {
                 if (desktopWeb) WebSidebar(
                     page = page,
-                    email = dashboards[7]?.email ?: accountData?.email ?: session?.email,
+                    email = accountEmail,
                     connected = session != null,
                     onNavigate = { navigate(it) },
                 )
@@ -248,63 +262,23 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
                     containerColor = MaterialTheme.colorScheme.surface,
                     contentWindowInsets = WindowInsets.safeDrawing,
                     topBar = {
-                        TopAppBar(
-                            title = {
-                                Column {
-                                    Text(page.title, style = if (desktopWeb) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge)
-                                    if (desktopWeb) Text(
-                                        when (page) {
-                                            Page.Overview -> "钱包、近期统计与独立套餐额度"
-                                            Page.Usage -> "按日期与模型了解每一笔用量"
-                                            Page.Lines -> "匿名线路探测与官网渠道状态"
-                                            Page.Keys -> "安全管理你的 API 访问凭据"
-                                            Page.Settings -> "账户会话与隐私说明"
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            },
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                            ),
+                        val refreshing = when (page) {
+                            Page.Keys -> keyManager?.busy == true
+                            Page.Lines -> probing || channelLoading
+                            else -> loading
+                        }
+                        MonitorTopBar(
+                            page = page,
+                            desktopWeb = desktopWeb,
+                            showRefresh = page != Page.Settings && !(web && page == Page.Keys),
+                            refreshing = refreshing,
+                            refreshEnabled = session != null || page == Page.Lines,
                             scrollBehavior = scrollBehavior,
-                            actions = {
-                                if (page != Page.Settings && !(web && page == Page.Keys)) {
-                                    val refreshing = when (page) {
-                                        Page.Keys -> keyManager?.busy == true
-                                        Page.Lines -> probing || channelLoading
-                                        else -> loading
-                                    }
-                                    val interaction = remember { MutableInteractionSource() }
-                                    val refresh = {
-                                        when (page) {
-                                            Page.Keys -> keyManager?.load(force = true)
-                                            Page.Lines -> lineRevision++
-                                            else -> { forceRefresh = true; revision++ }
-                                        }
-                                        Unit
-                                    }
-                                    if (desktopWeb) FilledTonalButton(
-                                        onClick = refresh,
-                                        interactionSource = interaction,
-                                        enabled = !refreshing && (session != null || page == Page.Lines),
-                                        modifier = Modifier.padding(end = 16.dp).height(48.dp).pressScale(interaction),
-                                    ) {
-                                        if (refreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                                        else MonitorIcon("refresh")
-                                        Spacer(Modifier.width(8.dp))
-                                        Text(if (refreshing) "正在刷新" else "刷新")
-                                    } else IconButton(
-                                        modifier = Modifier.size(48.dp).pressScale(interaction),
-                                        interactionSource = interaction,
-                                        enabled = !refreshing && (session != null || page == Page.Lines),
-                                        onClick = refresh,
-                                    ) {
-                                        if (refreshing) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                                        else MonitorIcon("refresh", "刷新${page.label}")
-                                    }
+                            onRefresh = {
+                                when (page) {
+                                    Page.Keys -> keyManager?.load(force = true)
+                                    Page.Lines -> lineRevision++
+                                    else -> { forceRefresh = true; revision++ }
                                 }
                             },
                         )
@@ -366,7 +340,7 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
                                         destination == Page.Settings -> item {
                                             if (session != null) {
                                                 AccountSettingsPanel(
-                                                    email = dashboards[7]?.email ?: accountData?.email ?: session?.email,
+                                                    email = accountEmail,
                                                     secureStorage = sessionStore.isSecure,
                                                     onLogout = ::logout,
                                                     wide = columns,
@@ -381,16 +355,7 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
                                                             connected = false,
                                                             email = null,
                                                             secureStorage = sessionStore.isSecure,
-                                                            onLogin = { signedIn, persist ->
-                                                                val stored = runCatching {
-                                                                    if (persist) sessionStore.save(signedIn.token) else sessionStore.clear()
-                                                                }.getOrDefault(false)
-                                                                storageMessage = if (stored) null else "账号会话保存失败，仅本次登录有效。"
-                                                                session = signedIn
-                                                                backwards = false
-                                                                history = listOf(Page.Overview.name)
-                                                                if (!stored) toast("会话未能保存，下次需要重新登录")
-                                                            },
+                                                            onLogin = ::login,
                                                             onLogout = ::logout,
                                                         )
                                                     }
@@ -446,6 +411,7 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
                                                     overview.warnings.distinct().forEach { message -> item { Notice(message, error = true) } }
                                                 } else if (!loading) item { Notice("暂时没有账户数据，请点击顶部刷新重试。") }
                                             } else if (destination == Page.Usage) {
+                                                // 列表项保持稳定；切换账号时重建面板内的状态。
                                                 item(key = "usage") {
                                                     key(session) {
                                                         val active = session
@@ -485,6 +451,65 @@ fun App(fontFamily: FontFamily = FontFamily.Default, web: Boolean = false) {
             KeyManagementDialogs(it)
         }
     }
+}
+
+@Composable
+private fun MonitorTopBar(
+    page: Page,
+    desktopWeb: Boolean,
+    showRefresh: Boolean,
+    refreshing: Boolean,
+    refreshEnabled: Boolean,
+    scrollBehavior: TopAppBarScrollBehavior,
+    onRefresh: () -> Unit,
+) {
+    TopAppBar(
+        title = {
+            Column {
+                Text(page.title, style = if (desktopWeb) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge)
+                if (desktopWeb) Text(
+                    when (page) {
+                        Page.Overview -> "钱包、近期统计与独立套餐额度"
+                        Page.Usage -> "按日期与模型了解每一笔用量"
+                        Page.Lines -> "匿名线路探测与官网渠道状态"
+                        Page.Keys -> "安全管理你的 API 访问凭据"
+                        Page.Settings -> "账户会话与隐私说明"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+        scrollBehavior = scrollBehavior,
+        actions = {
+            if (showRefresh) {
+                val interaction = remember { MutableInteractionSource() }
+                if (desktopWeb) FilledTonalButton(
+                    onClick = onRefresh,
+                    interactionSource = interaction,
+                    enabled = !refreshing && refreshEnabled,
+                    modifier = Modifier.padding(end = 16.dp).height(48.dp).pressScale(interaction),
+                ) {
+                    if (refreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    else MonitorIcon("refresh")
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (refreshing) "正在刷新" else "刷新")
+                } else IconButton(
+                    modifier = Modifier.size(48.dp).pressScale(interaction),
+                    interactionSource = interaction,
+                    enabled = !refreshing && refreshEnabled,
+                    onClick = onRefresh,
+                ) {
+                    if (refreshing) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                    else MonitorIcon("refresh", "刷新${page.label}")
+                }
+            }
+        },
+    )
 }
 
 @Composable
